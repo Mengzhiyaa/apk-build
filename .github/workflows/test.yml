@@ -1,0 +1,132 @@
+name: "Test APK"
+on:
+  repository_dispatch:
+    types: [run-tests]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA to test"
+        type: string
+      source_ref:
+        required: false
+        description: "The branch/ref to test"
+        default: "main"
+        type: string
+
+# Prevent concurrent test runs for the same SHA
+concurrency:
+  group: test-${{ github.event.client_payload.sha || inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  # Resolve inputs from either repository_dispatch or workflow_dispatch
+  resolve:
+    name: Resolve Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+    steps:
+      - name: Resolve dispatch payload
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+            echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "sha=${{ inputs.source_sha }}" >> $GITHUB_OUTPUT
+            echo "ref=${{ inputs.source_ref }}" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+          fi
+
+  # Report pending status to apks
+  report_pending:
+    name: Report Pending
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set pending commit status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ needs.resolve.outputs.sha }}',
+              state: 'pending',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / tests',
+              description: 'Tests are running...'
+            });
+
+  test_linux:
+    name: Test Linux
+    needs: [resolve, report_pending]
+    uses: ./.github/workflows/test-linux.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  test_macos:
+    name: Test macOS
+    needs: [resolve, report_pending]
+    uses: ./.github/workflows/test-macos.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  test_windows:
+    name: Test Windows
+    needs: [resolve, report_pending]
+    uses: ./.github/workflows/test-windows.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  test_libpy:
+    name: Test libpy Multi-Python
+    needs: [resolve, report_pending]
+    uses: ./.github/workflows/test-libpy.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  # Report final status back to apks
+  report_status:
+    name: Report Status
+    if: always()
+    needs: [resolve, test_linux, test_macos, test_windows, test_libpy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine overall result
+        id: result
+        run: |
+          if [ "${{ needs.test_linux.result }}" = "success" ] && \
+             [ "${{ needs.test_macos.result }}" = "success" ] && \
+             [ "${{ needs.test_windows.result }}" = "success" ] && \
+             [ "${{ needs.test_libpy.result }}" = "success" ]; then
+            echo "state=success" >> $GITHUB_OUTPUT
+            echo "description=All tests passed" >> $GITHUB_OUTPUT
+          else
+            echo "state=failure" >> $GITHUB_OUTPUT
+            echo "description=Tests failed (linux=${{ needs.test_linux.result }}, macos=${{ needs.test_macos.result }}, windows=${{ needs.test_windows.result }}, libpy=${{ needs.test_libpy.result }})" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Report commit status to apks
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ needs.resolve.outputs.sha }}',
+              state: '${{ steps.result.outputs.state }}',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / tests',
+              description: '${{ steps.result.outputs.description }}'
+            });

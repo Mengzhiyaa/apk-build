@@ -1,0 +1,72 @@
+name: "Build APK Windows Release"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        description: "The APK version"
+        default: dev
+        type: string
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  build_windows:
+    name: Build Windows (${{ matrix.arch }})
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 40
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runs_on: windows-latest
+            rust_target_prefix: x86_64
+          - arch: arm64
+            runs_on: windows-11-arm
+            rust_target_prefix: aarch64
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        shell: pwsh
+        run: |
+          vcpkg install zeromq:${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}-windows
+          echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}-windows" >> $env:GITHUB_ENV
+
+      - name: Compile APK
+        shell: cmd
+        run: |
+          cargo build --release --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc --features lsp -p apk
+
+      - name: Create archive
+        shell: pwsh
+        run: |
+          $params = @{
+            Path = "target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\release\apk.exe"
+            DestinationPath = "apk-${{ inputs.version }}-windows-${{ matrix.arch }}.zip"
+          }
+          # Include LICENSE if it exists
+          if (Test-Path "LICENSE") {
+            $params.Path = @("target\${{ matrix.rust_target_prefix }}-pc-windows-msvc\release\apk.exe", "LICENSE")
+          }
+          Compress-Archive @params
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-windows-${{ matrix.arch }}-archive
+          path: apk-${{ inputs.version }}-windows-${{ matrix.arch }}.zip

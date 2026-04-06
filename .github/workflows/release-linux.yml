@@ -1,0 +1,76 @@
+name: "Build APK Linux Release"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        description: "The APK version"
+        default: dev
+        type: string
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  build_linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ARCH_FLAG: ${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}
+      GLIBC_MAX_VERSION: "2.26" # Sufficiently old for all target platforms
+
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Setup Build Environment
+        run: |
+          # Install cargo-zigbuild for glibc version control
+          cargo install --locked cargo-zigbuild
+          sudo apt install -y python3-pip
+          pip3 install ziglang
+
+      - name: Setup for arm64 cross-compiling
+        if: matrix.arch == 'arm64'
+        run: |
+          rustup target add aarch64-unknown-linux-gnu
+          # Install cross-compilation dependencies
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Compile APK
+        run: |
+          cargo zigbuild --target ${ARCH_FLAG}-unknown-linux-gnu.${GLIBC_MAX_VERSION} --release --features lsp -p apk
+
+      - name: Create archive
+        run: |
+          pushd target/${ARCH_FLAG}-unknown-linux-gnu/release
+
+          ARCHIVE="$GITHUB_WORKSPACE/apk-${{ inputs.version }}-linux-${{ matrix.arch }}.zip"
+          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE 2>/dev/null || true
+          zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
+
+          popd
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-linux-${{ matrix.arch }}-archive
+          path: apk-${{ inputs.version }}-linux-${{ matrix.arch }}.zip

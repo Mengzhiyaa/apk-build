@@ -1,0 +1,249 @@
+name: "Build APK Release"
+on:
+  repository_dispatch:
+    types: [run-release]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA to build"
+        type: string
+      release_channel:
+        required: false
+        description: "Release channel: stable, alpha, beta, rc"
+        default: "alpha"
+        type: choice
+        options:
+          - alpha
+          - beta
+          - rc
+          - stable
+
+# Only one release at a time
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Required for creating releases and tags
+permissions:
+  contents: write
+
+jobs:
+  # Resolve inputs
+  resolve:
+    name: Resolve Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      channel: ${{ steps.resolve.outputs.channel }}
+    steps:
+      - name: Resolve dispatch payload
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
+            echo "channel=${{ github.event.client_payload.release_channel || 'alpha' }}" >> $GITHUB_OUTPUT
+          else
+            echo "sha=${{ inputs.source_sha }}" >> $GITHUB_OUTPUT
+            echo "channel=${{ inputs.release_channel || 'alpha' }}" >> $GITHUB_OUTPUT
+          fi
+
+  # Extract the current version of APK from its Cargo.toml file.
+  get_version:
+    name: Determine APK Version
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    outputs:
+      APK_VERSION: ${{ steps.extract_version.outputs.result }}
+      RELEASE_TAG: ${{ steps.extract_version.outputs.tag }}
+      IS_PRERELEASE: ${{ steps.extract_version.outputs.prerelease }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Determine Version
+        id: extract_version
+        run: |
+          VERSION=$(cat crates/apk/Cargo.toml | grep '^version' | sed -e "s/[^.0-9]//g")
+          CHANNEL="${{ needs.resolve.outputs.channel }}"
+
+          if [ "$CHANNEL" = "stable" ]; then
+            TAG="${VERSION}"
+            PRERELEASE="false"
+          else
+            TAG="${VERSION}-${CHANNEL}"
+            PRERELEASE="true"
+          fi
+
+          echo "APK version: ${VERSION}, tag: ${TAG}, channel: ${CHANNEL}, prerelease: ${PRERELEASE}"
+          echo "result=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+
+  # Report pending status
+  report_pending:
+    name: Report Pending
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set pending commit status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ needs.resolve.outputs.sha }}',
+              state: 'pending',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / release',
+              description: 'Release build in progress...'
+            });
+
+  # Build APK for all platforms
+  build_linux:
+    name: Build Linux
+    uses: ./.github/workflows/release-linux.yml
+    needs: [get_version, resolve, report_pending]
+    secrets: inherit
+    with:
+      version: ${{ needs.get_version.outputs.RELEASE_TAG }}
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  build_macos:
+    name: Build macOS
+    uses: ./.github/workflows/release-macos.yml
+    needs: [get_version, resolve, report_pending]
+    secrets: inherit
+    with:
+      version: ${{ needs.get_version.outputs.RELEASE_TAG }}
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  build_windows:
+    name: Build Windows
+    uses: ./.github/workflows/release-windows.yml
+    needs: [get_version, resolve, report_pending]
+    secrets: inherit
+    with:
+      version: ${{ needs.get_version.outputs.RELEASE_TAG }}
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
+  # Create a GitHub Release and upload all binaries
+  create_release:
+    name: Create Release & Upload Binaries
+    runs-on: ubuntu-latest
+    needs: [get_version, build_linux, build_macos, build_windows]
+    steps:
+      # Download all platform binaries
+      - name: Download Linux x64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-linux-x64-archive
+
+      - name: Download Linux arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-linux-arm64-archive
+
+      - name: Download macOS arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-darwin-arm64-archive
+
+      - name: Download macOS x64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-darwin-x64-archive
+
+      - name: Download macOS universal
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-darwin-universal-archive
+
+      - name: Download Windows x64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-windows-x64-archive
+
+      - name: Download Windows arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-windows-arm64-archive
+
+      # Create release and upload all binaries in one step
+      - name: Create release and upload artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.get_version.outputs.RELEASE_TAG }}
+          name: APK ${{ needs.get_version.outputs.RELEASE_TAG }}
+          draft: false
+          prerelease: ${{ needs.get_version.outputs.IS_PRERELEASE == 'true' }}
+          generate_release_notes: true
+          make_latest: ${{ needs.get_version.outputs.IS_PRERELEASE != 'true' }}
+          files: |
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-linux-x64.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-linux-arm64.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-darwin-arm64.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-darwin-x64.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-darwin-universal.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-windows-x64.zip
+            apk-${{ needs.get_version.outputs.RELEASE_TAG }}-windows-arm64.zip
+
+  # Report final status back to apks
+  report_status:
+    name: Report Status
+    if: always()
+    needs: [resolve, create_release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine overall result
+        id: result
+        run: |
+          if [ "${{ needs.create_release.result }}" = "success" ]; then
+            echo "state=success" >> $GITHUB_OUTPUT
+            echo "description=Release published successfully" >> $GITHUB_OUTPUT
+          else
+            echo "state=failure" >> $GITHUB_OUTPUT
+            echo "description=Release failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Report commit status to apks
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ needs.resolve.outputs.sha }}',
+              state: '${{ steps.result.outputs.state }}',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / release',
+              description: '${{ steps.result.outputs.description }}'
+            });
+
+  # Clean up failed releases
+  cleanup:
+    name: Clean up Failed Releases
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    needs: [create_release, get_version]
+    steps:
+      - name: Check for existing release tag
+        uses: mukunku/tag-exists-action@v1.6.0
+        id: check_tag
+        with:
+          tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
+
+      - name: Delete failed release if any
+        if: steps.check_tag.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=${{ needs.get_version.outputs.RELEASE_TAG }}
+          gh release delete $TAG -y --cleanup-tag

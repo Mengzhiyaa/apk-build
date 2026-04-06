@@ -1,0 +1,48 @@
+name: "Test APK - Windows"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  windows:
+    name: "Rust: stable, OS: windows-latest"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout apks source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        shell: pwsh
+        run: |
+          vcpkg install zeromq:x64-windows
+          echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
+
+      - name: Report Rust Toolchain
+        run: rustup show
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --features lsp
+
+      - name: Resolve Python executable
+        shell: pwsh
+        run: |
+          $py = python -c "import sys; print(sys.executable)"
+          "APK_PYTHON_PATH=$py" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run Tests
+        run: cargo test --workspace --features lsp

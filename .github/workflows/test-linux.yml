@@ -1,0 +1,81 @@
+name: "Test APK - Linux"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  linux:
+    name: "Rust: ${{ matrix.rust }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable]
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout apks source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev python3-pip
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --features lsp -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --features lsp
+
+      - name: Resolve Python executable
+        run: |
+          python3 -m venv .venv-apk-tests
+          echo "APK_PYTHON_PATH=$GITHUB_WORKSPACE/.venv-apk-tests/bin/python" >> $GITHUB_ENV
+
+      - name: Run Tests
+        run: cargo test --workspace --features lsp
+
+      - name: Run APK LSP Tests
+        run: cargo test -p apk --features lsp
+
+      - name: Run Notebook Completion Test (LSP)
+        run: APK_TEST_SESSION_MODE=notebook cargo test -p apk --features lsp --test kernel-completion test_completion_os_path
+
+      - name: Install optional Python test dependencies
+        run: |
+          "$APK_PYTHON_PATH" -m pip install --upgrade pip
+          "$APK_PYTHON_PATH" -m pip install matplotlib pandas ipywidgets numpy
+
+      - name: Run APK Optional-Dependency Coverage
+        run: |
+          cargo test -p apk --test kernel-widget
+          cargo test -p apk --test kernel-plots
+          cargo test -p apk --test kernel-plots-background
+          cargo test -p apk --test kernel-plots-notebook
+          cargo test -p apk --test kernel-mpl-split-cells
+          cargo test -p apk --test integration test_dataframe_resolve
+          cargo test -p apk --test integration test_matplotlib_backend_load
+          cargo test -p apk --test integration test_matplotlib_after_display_override

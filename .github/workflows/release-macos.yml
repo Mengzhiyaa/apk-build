@@ -1,0 +1,148 @@
+name: "Build APK macOS Release"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        description: "The APK version"
+        type: string
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: "11"
+
+jobs:
+  # Build APK for macOS. Both arm64 (Apple Silicon) and x64 (Intel).
+  build_macos:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    strategy:
+      matrix:
+        arch: [arm64, x64]
+        include:
+          - arch: arm64
+            rust_target_prefix: aarch64
+            homebrew_folder: /opt/homebrew
+          - arch: x64
+            rust_target_prefix: x86_64
+            homebrew_folder: /usr/local
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+
+      - name: Install system dependencies (arm64)
+        if: matrix.arch == 'arm64'
+        run: brew install zeromq
+
+      - name: Setup for x86 cross-compiling
+        if: matrix.arch == 'x64'
+        run: |
+          # Install x86 homebrew
+          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+          # Install x86 zeromq
+          arch -x86_64 ${{ matrix.homebrew_folder }}/bin/brew install zeromq
+
+          # Install x86 Rust target
+          rustup target add x86_64-apple-darwin
+
+      - name: Update PATH for x86 pkg-config
+        if: matrix.arch == 'x64'
+        run: |
+          echo "${{ matrix.homebrew_folder }}/bin" >> $GITHUB_PATH
+
+      - name: Compile APK (${{ matrix.arch }})
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1
+        run: |
+          cargo build --release --target ${{ matrix.rust_target_prefix }}-apple-darwin --features lsp -p apk
+
+      - name: Create archive
+        run: |
+          pushd target/${{ matrix.rust_target_prefix }}-apple-darwin/release
+
+          ARCHIVE="$GITHUB_WORKSPACE/apk-${{ inputs.version }}-darwin-${{ matrix.arch }}.zip"
+          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE 2>/dev/null || true
+          zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
+
+          popd
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-darwin-${{ matrix.arch }}-archive
+          path: apk-${{ inputs.version }}-darwin-${{ matrix.arch }}.zip
+
+  # Combine arm64 and x64 into a universal binary
+  build_universal:
+    name: Build macOS universal binary
+    runs-on: macos-latest
+    timeout-minutes: 20
+    needs: build_macos
+
+    steps:
+      - name: Checkout sources (for LICENSE only)
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+          sparse-checkout: |
+            LICENSE
+
+      - name: Download macOS arm64 kernel
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-darwin-arm64-archive
+
+      - name: Download macOS x64 kernel
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release-darwin-x64-archive
+
+      - name: Create macOS universal binary
+        run: |
+          # Decompress x64 build
+          rm -rf x64 && mkdir x64
+          pushd x64
+          unzip ../apk-${{ inputs.version }}-darwin-x64.zip
+          popd
+
+          # Decompress arm64 build
+          rm -rf arm64 && mkdir arm64
+          pushd arm64
+          unzip ../apk-${{ inputs.version }}-darwin-arm64.zip
+          popd
+
+          # Create a universal binary
+          lipo -create x64/apk arm64/apk -output apk
+
+          # Compress and bundle license
+          ARCHIVE="$GITHUB_WORKSPACE/apk-${{ inputs.version }}-darwin-universal.zip"
+          [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE 2>/dev/null || true
+          zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
+
+      - name: Upload universal archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release-darwin-universal-archive
+          path: apk-${{ inputs.version }}-darwin-universal.zip

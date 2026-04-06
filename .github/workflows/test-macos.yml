@@ -1,0 +1,45 @@
+name: "Test APK - macOS"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  macos:
+    name: "Rust: stable, OS: macos-latest"
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout apks source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: brew install zeromq
+
+      - name: Report Rust Toolchain
+        run: rustup show
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --features lsp -- -D warnings
+
+      - name: Build
+        run: cargo build --workspace --features lsp
+
+      - name: Resolve Python executable
+        run: echo "APK_PYTHON_PATH=$(python3 -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
+
+      - name: Run Tests
+        run: cargo test --workspace --features lsp

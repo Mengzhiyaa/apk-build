@@ -1,0 +1,177 @@
+name: "Test libpy - Multi-Python"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  libpy_matrix:
+    name: "libpy: Python ${{ matrix.python }} (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    # Versions below 3.10 and 3.14 (pre-release) are best-effort:
+    # they use continue-on-error so failures don't block CI.
+    continue-on-error: ${{ matrix.experimental }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        experimental: [false]
+        include:
+          # --- Below minimum supported (best-effort) ---
+          # Python 3.7/3.8 are EOL and unavailable on ubuntu-24.04,
+          # use ubuntu-22.04 where setup-python still provides them.
+          - os: ubuntu-22.04
+            python: "3.7"
+            experimental: true
+          - os: ubuntu-22.04
+            python: "3.8"
+            experimental: true
+          - os: ubuntu-latest
+            python: "3.9"
+            experimental: true
+          # --- Pre-release (best-effort) ---
+          - os: ubuntu-latest
+            python: "3.14"
+            experimental: true
+          # --- macOS coverage ---
+          - os: macos-latest
+            python: "3.10"
+            experimental: false
+          - os: macos-latest
+            python: "3.12"
+            experimental: false
+          - os: macos-latest
+            python: "3.13"
+            experimental: false
+          - os: macos-latest
+            python: "3.14"
+            experimental: true
+
+    steps:
+      - name: Checkout apks source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: ${{ matrix.experimental }}
+
+      - name: Verify Python version and shared library
+        run: |
+          python3 --version
+          python3 -c "
+          import sysconfig, os, sys, glob, platform
+
+          version = f'{sys.version_info.major}.{sys.version_info.minor}'
+          system = platform.system()
+
+          print(f'Python {version} ({system})')
+          print(f'Prefix: {sys.prefix}')
+          print(f'LIBDIR: {sysconfig.get_config_var(\"LIBDIR\")}')
+
+          libdir = sysconfig.get_config_var('LIBDIR')
+          prefix = sys.prefix
+
+          if system == 'Darwin':
+              search_dirs = [d for d in [
+                  libdir or '',
+                  os.path.join(prefix, 'lib'),
+              ] if d]
+              fw = os.path.join(prefix, '..', '..')
+              if os.path.isdir(fw):
+                  search_dirs.append(os.path.realpath(os.path.join(fw, 'lib')))
+              shared_names = [
+                  f'libpython{version}.dylib',
+                  f'libpython{version}m.dylib',
+                  'Python',
+                  f'libpython{version}.so',
+              ]
+              glob_patterns = [f'libpython{version}*.dylib', f'libpython{version}*.so*']
+          else:
+              search_dirs = [d for d in [
+                  libdir or '',
+                  os.path.join(prefix, 'lib'),
+                  os.path.join(prefix, 'lib64'),
+              ] if d]
+              shared_names = [
+                  f'libpython{version}.so.1.0',
+                  f'libpython{version}.so',
+                  f'libpython{version}m.so',
+                  'libpython3.so',
+              ]
+              glob_patterns = [f'libpython{version}*.so*']
+
+          found = False
+          for d in search_dirs:
+              for name in shared_names:
+                  p = os.path.join(d, name)
+                  if os.path.exists(p):
+                      print(f'Found: {os.path.realpath(p)}')
+                      found = True
+                      break
+              if found: break
+
+          if not found:
+              for d in search_dirs:
+                  for pat in glob_patterns:
+                      for m in sorted(glob.glob(os.path.join(d, pat)), reverse=True):
+                          print(f'Found (glob): {os.path.realpath(m)}')
+                          found = True
+                          break
+                  if found: break
+
+          if not found:
+              instso = sysconfig.get_config_var('INSTSONAME')
+              if instso and libdir:
+                  p = os.path.join(libdir, instso)
+                  if os.path.exists(p):
+                      print(f'Found (INSTSONAME): {os.path.realpath(p)}')
+                      found = True
+
+          if not found:
+              print('WARNING: No shared library found, tests may fail')
+          "
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install zeromq
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per Python version to avoid conflicts
+          key: python-${{ matrix.python }}
+
+      - name: Set APK_PYTHON_PATH
+        run: echo "APK_PYTHON_PATH=$(python3 -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
+
+      - name: Run libpy tests (symbol resolution + ABI validation)
+        run: cargo test -p libpy -- --nocapture
+
+      - name: Run libpy-check (compile-time signature validation)
+        if: ${{ !matrix.experimental }}
+        run: |
+          cargo build -p libpy-check
+          cargo run -p libpy-check
