@@ -26,6 +26,22 @@ jobs:
       - name: Install system dependencies
         run: brew install zeromq
 
+      - name: Set up uv Python environment
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: apk-tests-py313
+          ignore-nothing-to-cache: true
+
+      - name: Install Python test dependencies
+        run: |
+          uv pip install "numpy>=1.26" "pandas>=2.1" "matplotlib>=3.8" "ipywidgets>=8.1" "debugpy>=1.8"
+          echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+          python -c "import debugpy, ipywidgets, matplotlib, numpy, pandas; print('Python test dependencies ready')"
+
       - name: Report Rust Toolchain
         run: rustup show
 
@@ -37,9 +53,6 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --features lsp
-
-      - name: Resolve Python executable
-        run: echo "APK_PYTHON_PATH=$(python3 -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
 
       - name: Run Tests
         run: cargo test --workspace --features lsp

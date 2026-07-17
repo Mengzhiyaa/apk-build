@@ -29,6 +29,24 @@ jobs:
           vcpkg install zeromq:x64-windows
           echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" >> $env:GITHUB_ENV
 
+      - name: Set up uv Python environment
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: apk-tests-py313
+          ignore-nothing-to-cache: true
+
+      - name: Install Python test dependencies
+        shell: pwsh
+        run: |
+          uv pip install "numpy>=1.26" "pandas>=2.1" "matplotlib>=3.8" "ipywidgets>=8.1" "debugpy>=1.8"
+          $python = python -c "import sys; print(sys.executable)"
+          "APK_PYTHON_PATH=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          python -c "import debugpy, ipywidgets, matplotlib, numpy, pandas; print('Python test dependencies ready')"
+
       - name: Report Rust Toolchain
         run: rustup show
 
@@ -37,12 +55,6 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --features lsp
-
-      - name: Resolve Python executable
-        shell: pwsh
-        run: |
-          $py = python -c "import sys; print(sys.executable)"
-          "APK_PYTHON_PATH=$py" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run Tests
         run: cargo test --workspace --features lsp
