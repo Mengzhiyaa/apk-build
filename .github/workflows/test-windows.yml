@@ -53,6 +53,105 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # ----------------------------------------------------------------
+      # Windows-specific libpython diagnostic step.
+      # Always runs (does not gate the build). It snapshots:
+      #   1. The python interpreter used by `uv` (prefix, SOABI, version).
+      #   2. The pythonXY.dll that the project's find_libpython.py would
+      #      actually load (prefix\browser\pythonXY.dll, via py launcher).
+      #   3. A heuristic export-table probe for the symbols libpy cares
+      #      about, so a single CI failure can be traced to "DLL X
+      #      doesn't export PyRun_SimpleStringFlags" without rerunning.
+      # ----------------------------------------------------------------
+      - name: Diagnose Windows libpython DLL exports
+        if: always()
+        shell: pwsh
+        run: |
+          $py = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+          if (-not $py) {
+            Write-Host "python.exe not on PATH; skipping DLL diagnostics"
+            exit 0
+          }
+          $pyRoot = Split-Path -Parent $py
+          $ver = & python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+          Write-Host "===== Python interpreter ====="
+          Write-Host "Executable: $py"
+          Write-Host "Version:    $(python --version)"
+          & python -c "import sys, sysconfig; print('Prefix:', sys.prefix); print('SOABI:', sysconfig.get_config_var('SOABI')); print('LDLIBRARY:', sysconfig.get_config_var('LDLIBRARY'))"
+          # Free-threaded builds report a `t` suffix in the SOABI.
+          $soabi = & python -c "import sysconfig; print(sysconfig.get_config_var('SOABI') or '')"
+          $isFreeThreaded = $soabi -like '*t-cpython*'
+          Write-Host "Free-threaded build: $isFreeThreaded"
+
+          # The python.org launcher installs both pythonXY.dll and
+          # pythonXYt.dll side-by-side. uv's installed interpreter is
+          # the `t` variant when free-threaded is selected.
+          $candidates = @(
+            (Join-Path $pyRoot "python$ver.dll"),
+            (Join-Path $pyRoot "python${ver}t.dll")
+          )
+          Write-Host "===== Candidate DLLs ====="
+          foreach ($c in $candidates) {
+            if (Test-Path $c) {
+              $v = (Get-Item $c).VersionInfo
+              Write-Host ("  [+] {0}  size={1}  fileVersion={2}" -f $c, (Get-Item $c).Length, $v.FileVersion)
+            } else {
+              Write-Host "  [-] $c (not found)"
+            }
+          }
+
+          # Pick the DLL that find_libpython.py would pick (pythonXY.dll
+          # in the interpreter directory).
+          $dll = Join-Path $pyRoot "python$ver.dll"
+          if (-not (Test-Path $dll)) {
+            Write-Host "No pythonXY.dll found next to python.exe; skipping export probe"
+            exit 0
+          }
+          Write-Host "===== DLL under test ====="
+          Write-Host "Path: $dll"
+          Write-Host "Ver:  $((Get-Item $dll).VersionInfo.FileVersion)"
+
+          # Heuristic export-name probe. A DLL's export directory is
+          # parsed properly by dumpbin (MSVC) or llvm-readobj (LLVM).
+          # On stock windows-latest runner we don't have either, so we
+          # fall back to last-resort string matching against the file
+          # bytes. This is sufficient for distinguishing "the symbol
+          # string is not in the DLL's export table" from "the symbol
+          # exists but is not resolvable by libloading".
+          $symbols = @(
+            'Py_Initialize',
+            'Py_InitializeEx',
+            'Py_FinalizeEx',
+            'Py_IsInitialized',
+            'PyRun_SimpleString',
+            'PyRun_SimpleStringFlags',
+            'PyRun_String',
+            'PyRun_StringFlags',
+            'Py_CompileString',
+            'Py_CompileStringExFlags',
+            'PyLong_FromLong',
+            'PyLong_AsLong',
+            'PyGILState_Ensure',
+            'PyGILState_Release',
+            '_Py_NoneStruct'
+          )
+          $raw = [System.IO.File]::ReadAllBytes($dll)
+          Write-Host "===== Export-name presence (heuristic) ====="
+          foreach ($s in $symbols) {
+            $needle = [System.Text.Encoding]::ASCII.GetBytes($s)
+            $b64 = [System.Convert]::ToBase64String($raw)
+            $found = $b64.IndexOf([System.Convert]::ToBase64String($needle)) -ge 0
+            $mark = if ($found) { '[+] ' } else { '[-] ' }
+            Write-Host ("  {0}{1}" -f $mark, $s)
+          }
+          # Per the original failure signature:
+          #   - Py_Initialize / Py_FinalizeEx / PyLong_FromLong / PyGILState_*
+          #     were present (test_load_library & functional tests passed).
+          #   - PyRun_SimpleStringFlags was the missing piece.
+          # Once we see [-] PyRun_SimpleStringFlags in this log, we have
+          # local confirmation that the Windows DLL simply doesn't export
+          # the underlying symbol that PyRun_SimpleString's macro expands to.
+
       - name: Build
         run: cargo build --workspace --features lsp
 
@@ -76,3 +175,25 @@ jobs:
           cargo test -p apk --test integration test_dataframe_resolve
           cargo test -p apk --test integration test_matplotlib_backend_load
           cargo test -p apk --test integration test_matplotlib_after_display_override
+
+      # ----------------------------------------------------------------
+      # Targeted libpy Windows regression capture.
+      # Mirrors the matrix in test-libpy-windows.yml but runs only the
+      # default interpreter that's already installed for the apk suite.
+      # Output is captured to a log artifact for offline diagnosis.
+      # ----------------------------------------------------------------
+      - name: Run libpy integration tests on Windows (allow-failure)
+        if: always()
+        shell: pwsh
+        run: |
+          $env:RUST_BACKTRACE = "1"
+          cargo test -p libpy --test integration -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath libpy-windows-integration.log
+
+      - name: Upload libpy Windows log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libpy-windows-default-integration
+          path: libpy-windows-integration.log
+          if-no-files-found: ignore
+          retention-days: 14

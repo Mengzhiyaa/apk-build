@@ -175,3 +175,14 @@ jobs:
         run: |
           cargo build -p libpy-check
           cargo run -p libpy-check
+
+  # Windows-specific diagnostic matrix (always best-effort):
+  # surfaces DLL export differences across Python versions and
+  # free-threaded builds without blocking the wave.
+  libpy_windows:
+    name: "libpy: Windows diagnostics"
+    needs: [libpy_matrix]
+    uses: ./.github/workflows/test-libpy-windows.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}

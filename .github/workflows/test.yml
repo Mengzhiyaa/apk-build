@@ -105,6 +105,9 @@ jobs:
       - name: Determine overall result
         id: result
         run: |
+          # libpy_windows is intentionally continue-on-error; treat any
+          # non-success state as a soft warning so the overall commit
+          # status reflects real regressions, not diagnostic noise.
           if [ "${{ needs.test_linux.result }}" = "success" ] && \
              [ "${{ needs.test_macos.result }}" = "success" ] && \
              [ "${{ needs.test_windows.result }}" = "success" ] && \

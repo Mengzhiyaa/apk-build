@@ -1,0 +1,243 @@
+name: "Test libpy - Windows"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apks repository"
+        type: string
+
+jobs:
+  # Cross-Python diagnostic matrix for Windows.
+  #
+  # Goal: surface the differences between CPython's Windows DLLs
+  # (release vs free-threaded, pythonXY.dll vs pythonXYt.dll, debug
+  # vs release build) without changing the project's hard test
+  # assertions. This job is intentionally allow-failure so it can
+  # collect diagnostics even when the symptom is "libpy panic".
+  libpy_windows_matrix:
+    name: "libpy: Python ${{ matrix.label }} "
+    runs-on: windows-latest
+    timeout-minutes: 25
+    # Diagnostic only — never fail the wave on missing symbols.
+    # We still want to *run* the integration tests so the panic is
+    # captured in the log; we just don't block CI on it.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Default: python.org launcher (matches developer machine) ---
+          - label: "3.13 (default)"
+            python-version: "3.13"
+            install-method: launcher
+          # --- Stable variants: explicit minor versions ---
+          - label: "3.12 (default)"
+            python-version: "3.12"
+            install-method: launcher
+          - label: "3.11 (default)"
+            python-version: "3.11"
+            install-method: launcher
+          - label: "3.10 (default)"
+            python-version: "3.10"
+            install-method: launcher
+          # --- Free-threaded build (the most likely culprit) ---
+          # CPython t-suffix: PyRun_SimpleStringFlags may not be exported
+          # in the free-threaded build's DLL, even though libpy loads fine.
+          - label: "3.13t (free-threaded)"
+            python-version: "3.13t"
+            install-method: launcher
+          # --- Embeddable distribution (different export set) ---
+          - label: "3.13 (embeddable zip)"
+            python-version: "3.13"
+            install-method: embeddable
+
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Suppress telemetry spam from the installer on Windows runners.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Checkout apks source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Prepare embeddable Python 3.13
+        if: matrix.install-method == 'embeddable'
+        shell: pwsh
+        run: |
+          # The Python FTP layout uses the full patch version:
+          # /ftp/python/3.13.5/python-3.13.5-embed-amd64.zip
+          # There is no stable /ftp/python/3.13/ directory containing the
+          # embeddable archive, so resolve the newest 3.13.x release first.
+          $indexUrl = "https://www.python.org/ftp/python/"
+          $index = (Invoke-WebRequest -Uri $indexUrl -UseBasicParsing).Content
+          $versions = [regex]::Matches($index, 'href="(3\.13\.\d+)/"') |
+            ForEach-Object { $_.Groups[1].Value } |
+            Sort-Object { [version]$_ } -Descending
+          if (-not $versions) {
+            throw "Could not find a Python 3.13.x release in $indexUrl"
+          }
+
+          $release = $null
+          foreach ($candidate in $versions) {
+            $candidateUrl = "https://www.python.org/ftp/python/$candidate/python-$candidate-embed-amd64.zip"
+            try {
+              $response = Invoke-WebRequest -Uri $candidateUrl -Method Head -UseBasicParsing -ErrorAction Stop
+              if ($response.StatusCode -eq 200) {
+                $release = $candidate
+                break
+              }
+            } catch {
+              Write-Host "Embeddable archive not found for $candidate; trying an older patch release"
+            }
+          }
+          if (-not $release) {
+            throw "Could not find a downloadable Python 3.13 embeddable amd64 archive"
+          }
+
+          $zipName = "python-$release-embed-amd64.zip"
+          $url = "https://www.python.org/ftp/python/$release/$zipName"
+          $dest = "$env:RUNNER_TEMP\python-embed"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile "$dest\$zipName" -UseBasicParsing
+          Expand-Archive -Path "$dest\$zipName" -DestinationPath $dest -Force
+          # Add embedded interpreter to PATH for subsequent steps.
+          echo "$dest" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # Report the embedded layout so we can confirm it's a zip-based
+          # pythonXY.dll (no py launcher, no site-packages).
+          Get-ChildItem $dest | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Set up Python ${{ matrix.python-version }} (launcher)
+        if: matrix.install-method == 'launcher'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Report environment
+        shell: pwsh
+        run: |
+          Write-Host "=== Runner environment ==="
+          Write-Host "OS: $env:OS"
+          Write-Host "ARCH: $env:PROCESSOR_ARCHITECTURE"
+          where.exe python.exe | Select-Object -First 1
+          where.exe python3.exe | Select-Object -First 1
+          python --version
+          python -c "import sys, sysconfig; print('prefix:', sys.prefix); print('executable:', sys.executable); print('LDLIBRARY:', sysconfig.get_config_var('LDLIBRARY')); print('SOABI:', sysconfig.get_config_var('SOABI'))"
+
+      - name: Locate the libpython DLL that the test would pick up
+        shell: pwsh
+        run: |
+          # Find the actual pythonXY.dll that the project's
+          # tests/fixtures/find_libpython.py would select, so we can
+          # inspect its exports with dumpbin /objdump /Get-Item.
+          $py = (Get-Command python.exe).Source
+          $root = Split-Path -Parent $py
+          $ver = & python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+          Write-Host "Python root: $root"
+          Write-Host "Looking for python$ver*.dll"
+          Get-ChildItem -Path $root -Filter "python$ver*.dll" -File | Select-Object FullName, Length | Format-Table -AutoSize
+          $dll = Get-ChildItem -Path $root -Filter "python$ver*.dll" -File | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dll) {
+            Write-Warning "No python$ver.dll found under $root"
+            exit 0
+          }
+          # Stash the path for the next step.
+          "LIBPY_DLL_PATH=$dll" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Confirm DLL is loadable + dump selected exports
+        shell: pwsh
+        run: |
+          if (-not $env:LIBPY_DLL_PATH) { Write-Host "No DLL identified; skipping"; exit 0 }
+          $dll = $env:LIBPY_DLL_PATH
+          Write-Host "DLL: $dll"
+          Write-Host "File version info:"
+          (Get-Item $dll).VersionInfo | Select-Object FileName, FileVersion, ProductVersion | Format-List
+
+          # Use .NET reflection to enumerate exports — this works on stock
+          # windows-latest without installing Visual Studio build tools.
+          Add-Type -AssemblyName System.Reflection.Metadata
+          Add-Type -AssemblyName System.Reflection
+          try {
+            $bytes = [System.IO.File]::ReadAllBytes($dll)
+            $ms = New-Object System.IO.MemoryStream (,$bytes)
+            $peReader = New-Object System.Reflection.PortableExecutable.PEReader($ms)
+            $headers = $peReader.PEHeaders
+            Write-Host "Machine: $($headers.CoffHeader.Machine)"
+            Write-Host "PE kind: $($headers.PEKind)"
+          } catch {
+            Write-Warning "PE header probe failed: $_"
+          }
+
+          # A much simpler check: dump the string table for the symbols
+          # we care about by reading the DLL's raw bytes. We just want
+          # to know whether the symbol *name* appears in the export
+          # table — this is enough to differentiate "exported" from
+          # "missing" without needing dumpbin.
+          $symbols = @(
+            'Py_Initialize',
+            'Py_InitializeEx',
+            'Py_FinalizeEx',
+            'Py_IsInitialized',
+            'PyRun_SimpleString',
+            'PyRun_SimpleStringFlags',
+            'PyRun_String',
+            'PyRun_StringFlags',
+            'Py_CompileString',
+            'Py_CompileStringExFlags',
+            'PyLong_FromLong',
+            'PyLong_AsLong',
+            'PyGILState_Ensure',
+            'PyGILState_Release',
+            '_Py_NoneStruct'
+          )
+          $raw = [System.IO.File]::ReadAllBytes($dll)
+          Write-Host ""
+          Write-Host "=== Name presence in export table (heuristic) ==="
+          foreach ($s in $symbols) {
+            $bytes = [System.Text.Encoding]::ASCII.GetBytes($s)
+            $idx = [System.Convert]::ToBase64String($raw).IndexOf([System.Convert]::ToBase64String($bytes))
+            if ($idx -ge 0) { Write-Host "  [+] $s" } else { Write-Host "  [-] $s" }
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: libpy-windows-${{ matrix.label }}
+
+      - name: Run libpy integration tests (capture, allow failure)
+        id: libpy_integration
+        shell: pwsh
+        run: |
+          # Filter output so the panic line is highlighted if it occurs.
+          # `cargo test` returns a non-zero exit code when tests fail;
+          # the `continue-on-error: true` on the job keeps CI green.
+          $env:RUST_BACKTRACE = "1"
+          cargo test -p libpy --test integration -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath libpy-integration.log
+
+      - name: Run libpy diagnostics test (added in this PR)
+        id: libpy_diagnostics
+        shell: pwsh
+        run: |
+          $env:RUST_BACKTRACE = "1"
+          cargo test -p libpy --test diagnostics -- --nocapture 2>&1 | Tee-Object -FilePath libpy-diagnostics.log
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: libpy-windows-${{ matrix.label }}-logs
+          path: |
+            libpy-integration.log
+            libpy-diagnostics.log
+          if-no-files-found: ignore
+          retention-days: 14
