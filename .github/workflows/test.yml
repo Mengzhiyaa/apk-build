@@ -95,11 +95,19 @@ jobs:
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
 
+  test_pybridge:
+    name: Test pybridge CPython ABI Matrix
+    needs: [resolve, report_pending]
+    uses: ./.github/workflows/test-pybridge.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+
   # Report final status back to apks
   report_status:
     name: Report Status
     if: always()
-    needs: [resolve, test_linux, test_macos, test_windows, test_libpy]
+    needs: [resolve, test_linux, test_macos, test_windows, test_libpy, test_pybridge]
     runs-on: ubuntu-latest
     steps:
       - name: Determine overall result
@@ -111,12 +119,13 @@ jobs:
           if [ "${{ needs.test_linux.result }}" = "success" ] && \
              [ "${{ needs.test_macos.result }}" = "success" ] && \
              [ "${{ needs.test_windows.result }}" = "success" ] && \
-             [ "${{ needs.test_libpy.result }}" = "success" ]; then
+             [ "${{ needs.test_libpy.result }}" = "success" ] && \
+             [ "${{ needs.test_pybridge.result }}" = "success" ]; then
             echo "state=success" >> $GITHUB_OUTPUT
             echo "description=All tests passed" >> $GITHUB_OUTPUT
           else
             echo "state=failure" >> $GITHUB_OUTPUT
-            echo "description=Tests failed (linux=${{ needs.test_linux.result }}, macos=${{ needs.test_macos.result }}, windows=${{ needs.test_windows.result }}, libpy=${{ needs.test_libpy.result }})" >> $GITHUB_OUTPUT
+            echo "description=Failed: L=${{ needs.test_linux.result }}, M=${{ needs.test_macos.result }}, W=${{ needs.test_windows.result }}, libpy=${{ needs.test_libpy.result }}, pybridge=${{ needs.test_pybridge.result }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Report commit status to apks

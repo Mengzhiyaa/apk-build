@@ -1,0 +1,103 @@
+name: "Test pybridge - CPython ABI Matrix"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apk repository"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pybridge_matrix:
+    name: "pybridge: Python ${{ matrix.python }} (${{ matrix.os }}, ${{ matrix.arch }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # These two hosts exercise every versioned table entry for the two
+        # distinct 64-bit layouts: Unix and Windows.
+        os: [ubuntu-22.04, windows-latest]
+        arch: [x64]
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # macOS uses the Unix table, but run both ends of the PyConfig range
+          # plus the opaque PyInitConfig backend on an Intel host.
+          - os: macos-15-intel
+            arch: x64
+            python: "3.8"
+          - os: macos-15-intel
+            arch: x64
+            python: "3.13"
+          - os: macos-15-intel
+            arch: x64
+            python: "3.14"
+
+          # Representative native ARM64 coverage. PyConfig layout selection is
+          # based on OS family and pointer width, so 3.13 exercises the largest
+          # table entry and 3.14 exercises the opaque backend.
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            python: "3.13"
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            python: "3.14"
+          - os: macos-latest
+            arch: arm64
+            python: "3.13"
+          - os: macos-latest
+            arch: arm64
+            python: "3.14"
+          - os: windows-11-arm
+            arch: arm64
+            python: "3.13"
+          - os: windows-11-arm
+            arch: arm64
+            python: "3.14"
+
+    steps:
+      - name: Checkout apk source
+        uses: actions/checkout@v7
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Set up MSVC Developer Command Prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Set up Python ${{ matrix.python }} (${{ matrix.arch }})
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+
+      - name: Select Python for pybridge tests
+        run: >-
+          python -c "import os, sys;
+          print(sys.version);
+          print(sys.executable);
+          open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8').write('APK_PYTHON_PATH=' + sys.executable + '\n')"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: pybridge-abi-${{ matrix.os }}-${{ matrix.arch }}-py${{ matrix.python }}
+
+      - name: Verify PyConfig ABI and initialize selected Python
+        env:
+          # Makes the unit test compile a temporary C probe against the selected
+          # Python.h. This is CI-only and is not part of APK's normal build.
+          APK_VERIFY_PYCONFIG_ABI: "1"
+        run: cargo test -p pybridge -- --nocapture --test-threads=1
