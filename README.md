@@ -43,6 +43,18 @@ Linux, macOS, and Windows ARM64 jobs cover the native release architectures.
 The retained 32-bit tables are not currently part of the CI matrix; a future
 32-bit runner can enable the same verifier without changing its test code.
 
+## libpy Runtime Matrix
+
+The libpy workflow runs every supported Python version (3.10–3.14) on Linux,
+macOS, and Windows. Each job loads and initializes the selected interpreter in
+the Rust process, verifies its executable and path configuration, creates a
+Matplotlib figure through APK's embedded backend, exercises the console plot
+comm pipeline, and verifies notebook PNG display data. Python 3.7–3.9 remain
+non-blocking compatibility checks: Python 3.8–3.9 run the same complete suite
+on Linux, macOS, and Windows, while Python 3.7 remains a Linux-only libpy
+diagnostic. Free-threaded and embeddable Windows distributions run as
+supplemental diagnostics.
+
 ## License
 
 MIT

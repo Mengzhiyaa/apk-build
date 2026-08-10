@@ -5,11 +5,13 @@ on:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA from the apks repository"
+        description: "The commit SHA from the apk repository"
         type: string
 
 jobs:
-  # Cross-Python diagnostic matrix for Windows.
+  # Supplemental Windows variants. Supported release interpreters are part of
+  # the blocking matrix in test-libpy.yml; this workflow focuses on layouts
+  # that cannot run the normal plotting dependency suite.
   #
   # Goal: surface the differences between CPython's Windows DLLs
   # (release vs free-threaded, pythonXY.dll vs pythonXYt.dll, debug
@@ -17,7 +19,7 @@ jobs:
   # assertions. This job is intentionally allow-failure so it can
   # collect diagnostics even when the symptom is "libpy panic".
   libpy_windows_matrix:
-    name: "libpy: Python ${{ matrix.label }} "
+    name: "libpy: Python ${{ matrix.label }}"
     runs-on: windows-latest
     timeout-minutes: 25
     # Diagnostic only — never fail the wave on missing symbols.
@@ -28,20 +30,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # --- Default: python.org launcher (matches developer machine) ---
-          - label: "3.13 (default)"
-            python-version: "3.13"
-            install-method: launcher
-          # --- Stable variants: explicit minor versions ---
-          - label: "3.12 (default)"
-            python-version: "3.12"
-            install-method: launcher
-          - label: "3.11 (default)"
-            python-version: "3.11"
-            install-method: launcher
-          - label: "3.10 (default)"
-            python-version: "3.10"
-            install-method: launcher
           # --- Free-threaded build (the most likely culprit) ---
           # CPython t-suffix: PyRun_SimpleStringFlags may not be exported
           # in the free-threaded build's DLL, even though libpy loads fine.
@@ -60,7 +48,7 @@ jobs:
       PYTHONIOENCODING: "utf-8"
 
     steps:
-      - name: Checkout apks source
+      - name: Checkout apk source
         uses: actions/checkout@v4
         with:
           repository: Mengzhiyaa/apk

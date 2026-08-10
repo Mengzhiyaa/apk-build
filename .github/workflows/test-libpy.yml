@@ -5,58 +5,65 @@ on:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA from the apks repository"
+        description: "The commit SHA from the apk repository"
         type: string
 
 jobs:
   libpy_matrix:
     name: "libpy: Python ${{ matrix.python }} (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
 
-    # Versions below 3.10 and 3.14 (pre-release) are best-effort:
-    # they use continue-on-error so failures don't block CI.
+    # Versions below the supported Python 3.10 floor are best-effort.
     continue-on-error: ${{ matrix.experimental }}
 
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        # Every supported Python is exercised on all release platforms. These
+        # jobs load the selected interpreter in-process and run real plot
+        # pipelines in addition to libpy's symbol/ABI checks.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         experimental: [false]
+        runtime_tests: [true]
         include:
-          # --- Below minimum supported (best-effort) ---
-          # Python 3.7/3.8 are EOL and unavailable on ubuntu-24.04,
-          # use ubuntu-22.04 where setup-python still provides them.
+          # Python 3.7 is EOL and only retained as a libpy diagnostic.
           - os: ubuntu-22.04
             python: "3.7"
             experimental: true
+            runtime_tests: false
+
+          # Python 3.8/3.9 are below the supported runtime floor, but exercise
+          # the full interpreter and plotting suite on every desktop OS.
+          # Use Intel macOS for these older CPython distributions.
           - os: ubuntu-22.04
             python: "3.8"
             experimental: true
+            runtime_tests: true
+          - os: macos-15-intel
+            python: "3.8"
+            experimental: true
+            runtime_tests: true
+          - os: windows-latest
+            python: "3.8"
+            experimental: true
+            runtime_tests: true
           - os: ubuntu-latest
             python: "3.9"
             experimental: true
-          # --- Pre-release (best-effort) ---
-          - os: ubuntu-latest
-            python: "3.14"
+            runtime_tests: true
+          - os: macos-15-intel
+            python: "3.9"
             experimental: true
-          # --- macOS coverage ---
-          - os: macos-latest
-            python: "3.10"
-            experimental: false
-          - os: macos-latest
-            python: "3.12"
-            experimental: false
-          - os: macos-latest
-            python: "3.13"
-            experimental: false
-          - os: macos-latest
-            python: "3.14"
+            runtime_tests: true
+          - os: windows-latest
+            python: "3.9"
             experimental: true
+            runtime_tests: true
 
     steps:
-      - name: Checkout apks source
+      - name: Checkout apk source
         uses: actions/checkout@v4
         with:
           repository: Mengzhiyaa/apk
@@ -64,89 +71,18 @@ jobs:
           token: ${{ secrets.APK_SOURCE_PAT }}
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-          allow-prereleases: ${{ matrix.experimental }}
 
-      - name: Verify Python version and shared library
+      - name: Verify selected Python
         run: |
-          python3 --version
-          python3 -c "
-          import sysconfig, os, sys, glob, platform
-
-          version = f'{sys.version_info.major}.{sys.version_info.minor}'
-          system = platform.system()
-
-          print(f'Python {version} ({system})')
-          print(f'Prefix: {sys.prefix}')
-          print(f'LIBDIR: {sysconfig.get_config_var(\"LIBDIR\")}')
-
-          libdir = sysconfig.get_config_var('LIBDIR')
-          prefix = sys.prefix
-
-          if system == 'Darwin':
-              search_dirs = [d for d in [
-                  libdir or '',
-                  os.path.join(prefix, 'lib'),
-              ] if d]
-              fw = os.path.join(prefix, '..', '..')
-              if os.path.isdir(fw):
-                  search_dirs.append(os.path.realpath(os.path.join(fw, 'lib')))
-              shared_names = [
-                  f'libpython{version}.dylib',
-                  f'libpython{version}m.dylib',
-                  'Python',
-                  f'libpython{version}.so',
-              ]
-              glob_patterns = [f'libpython{version}*.dylib', f'libpython{version}*.so*']
-          else:
-              search_dirs = [d for d in [
-                  libdir or '',
-                  os.path.join(prefix, 'lib'),
-                  os.path.join(prefix, 'lib64'),
-              ] if d]
-              shared_names = [
-                  f'libpython{version}.so.1.0',
-                  f'libpython{version}.so',
-                  f'libpython{version}m.so',
-                  'libpython3.so',
-              ]
-              glob_patterns = [f'libpython{version}*.so*']
-
-          found = False
-          for d in search_dirs:
-              for name in shared_names:
-                  p = os.path.join(d, name)
-                  if os.path.exists(p):
-                      print(f'Found: {os.path.realpath(p)}')
-                      found = True
-                      break
-              if found: break
-
-          if not found:
-              for d in search_dirs:
-                  for pat in glob_patterns:
-                      for m in sorted(glob.glob(os.path.join(d, pat)), reverse=True):
-                          print(f'Found (glob): {os.path.realpath(m)}')
-                          found = True
-                          break
-                  if found: break
-
-          if not found:
-              instso = sysconfig.get_config_var('INSTSONAME')
-              if instso and libdir:
-                  p = os.path.join(libdir, instso)
-                  if os.path.exists(p):
-                      print(f'Found (INSTSONAME): {os.path.realpath(p)}')
-                      found = True
-
-          if not found:
-              print('WARNING: No shared library found, tests may fail')
-          "
+          python --version
+          python -c "import platform, sys, sysconfig; expected='${{ matrix.python }}'; actual=f'{sys.version_info.major}.{sys.version_info.minor}'; print(f'executable: {sys.executable}'); print(f'platform: {platform.platform()}'); print(f'prefix: {sys.prefix}'); print('LDLIBRARY:', sysconfig.get_config_var('LDLIBRARY')); assert actual == expected, f'expected Python {expected}, got {actual}'"
+          python crates/libpy/tests/fixtures/find_libpython.py
 
       - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.runtime_tests
         run: |
           sudo apt-get update
           sudo apt-get install -y libzmq3-dev
@@ -155,20 +91,33 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install zeromq
 
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          vcpkg install zeromq:x64-windows
+          "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Python plotting dependencies
+        if: ${{ matrix.runtime_tests }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install matplotlib numpy
+          python -c "import matplotlib, numpy; print(f'matplotlib={matplotlib.__version__}, numpy={numpy.__version__}')"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust Cache
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Separate cache per Python version to avoid conflicts
-          key: python-${{ matrix.python }}
+          key: libpy-${{ matrix.os }}-python-${{ matrix.python }}
 
       - name: Set APK_PYTHON_PATH
-        run: echo "APK_PYTHON_PATH=$(python3 -c 'import sys; print(sys.executable)')" >> $GITHUB_ENV
+        run: python -c "import os, sys; open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8').write(f'APK_PYTHON_PATH={sys.executable}\n')"
 
       - name: Run libpy tests (symbol resolution + ABI validation)
-        run: cargo test -p libpy -- --nocapture
+        run: cargo test -p libpy -- --nocapture --test-threads=1
 
       - name: Run libpy-check (compile-time signature validation)
         if: ${{ !matrix.experimental }}
@@ -176,12 +125,28 @@ jobs:
           cargo build -p libpy-check
           cargo run -p libpy-check
 
-  # Windows-specific diagnostic matrix (always best-effort):
-  # surfaces DLL export differences across Python versions and
-  # free-threaded builds without blocking the wave.
+      - name: Initialize the selected Python through pybridge
+        if: ${{ matrix.runtime_tests }}
+        run: cargo test -p pybridge --test integration test_initialized_ -- --nocapture --test-threads=1
+
+      - name: Create a figure through the embedded Matplotlib backend
+        if: ${{ matrix.runtime_tests }}
+        run: cargo test -p apk --test integration test_matplotlib_backend_load -- --exact --nocapture --test-threads=1
+
+      - name: Exercise the console plot comm pipeline
+        if: ${{ matrix.runtime_tests }}
+        run: cargo test -p apk --test kernel_suite kernel_plots::test_plot_metadata_execution_id_matches_execute_request_msg_id -- --exact --nocapture --test-threads=1
+
+      - name: Render a notebook plot as PNG display data
+        if: ${{ matrix.runtime_tests }}
+        env:
+          APK_TEST_SESSION_MODE: notebook
+        run: cargo test -p apk --test kernel_notebook_suite kernel_plots_notebook::test_notebook_mode_sends_display_data_for_matplotlib -- --exact --nocapture --test-threads=1
+
+  # Release builds above are blocking. Keep unusual Windows layouts as
+  # best-effort diagnostics because they cannot install the normal plot suite.
   libpy_windows:
-    name: "libpy: Windows diagnostics"
-    needs: [libpy_matrix]
+    name: "libpy: Windows variant diagnostics"
     uses: ./.github/workflows/test-libpy-windows.yml
     secrets: inherit
     with:
