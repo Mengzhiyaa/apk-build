@@ -69,9 +69,6 @@ jobs:
       - name: Run Tests
         run: cargo test --workspace --features lsp
 
-      - name: Run APK LSP Tests
-        run: cargo test -p apk --features lsp
-
       - name: Run Notebook Completion Test (LSP)
         run: APK_TEST_SESSION_MODE=notebook cargo test -p apk --features lsp --test kernel_notebook_suite test_notebook_completion_os_path
 
@@ -85,52 +82,3 @@ jobs:
           cargo test -p apk --test integration test_dataframe_resolve
           cargo test -p apk --test integration test_matplotlib_backend_load
           cargo test -p apk --test integration test_matplotlib_after_display_override
-
-  native-debugger-python:
-    name: "Native debugger / Python: ${{ matrix.python }}"
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.8", "3.11", "3.13", "3.14"]
-    timeout-minutes: 20
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Checkout apks source
-        uses: actions/checkout@v4
-        with:
-          repository: Mengzhiyaa/apk
-          ref: ${{ inputs.source_sha }}
-          token: ${{ secrets.APK_SOURCE_PAT }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzmq3-dev
-
-      - name: Install Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: native-debugger-python-${{ matrix.python }}
-
-      - name: Resolve Python executable
-        run: |
-          python -m venv .venv-apk-debug-tests
-          echo "APK_PYTHON_PATH=$GITHUB_WORKSPACE/.venv-apk-debug-tests/bin/python" >> $GITHUB_ENV
-
-      - name: Run native debugger behavior tests
-        run: >-
-          env CC=/usr/bin/gcc CXX=/usr/bin/g++
-          cargo test -p apk --features lsp --test kernel_suite
-          kernel_debug::test_native_console_dap_breakpoint_evaluate_and_step

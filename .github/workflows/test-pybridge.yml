@@ -20,17 +20,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # These two hosts exercise every versioned table entry for the two
-        # distinct 64-bit layouts: Unix and Windows.
-        os: [ubuntu-22.04, windows-latest]
-        arch: [x64]
-        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        # x64 Linux/Windows and matching macOS ARM64/Intel rows now run in
+        # test-libpy.yml on the runner that already provisioned that Python.
+        # Keep only architecture/host combinations without a matching libpy
+        # runner here.
         include:
-          # macOS uses the Unix table, but run both ends of the PyConfig range
-          # plus the opaque PyInitConfig backend on an Intel host.
-          - os: macos-15-intel
-            arch: x64
-            python: "3.8"
+          # Retain Intel coverage for the largest versioned PyConfig entry and
+          # the opaque PyInitConfig backend. Python 3.8 Intel is covered by its
+          # existing libpy compatibility runner.
           - os: macos-15-intel
             arch: x64
             python: "3.13"
@@ -38,19 +35,12 @@ jobs:
             arch: x64
             python: "3.14"
 
-          # Representative native ARM64 coverage. PyConfig layout selection is
-          # based on OS family and pointer width, so 3.13 exercises the largest
-          # table entry and 3.14 exercises the opaque backend.
+          # Representative native ARM64 coverage not already supplied by the
+          # macos-latest libpy rows.
           - os: ubuntu-24.04-arm
             arch: arm64
             python: "3.13"
           - os: ubuntu-24.04-arm
-            arch: arm64
-            python: "3.14"
-          - os: macos-latest
-            arch: arm64
-            python: "3.13"
-          - os: macos-latest
             arch: arm64
             python: "3.14"
           - os: windows-11-arm

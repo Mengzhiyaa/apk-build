@@ -42,12 +42,6 @@ jobs:
             echo "pr_number=" >> $GITHUB_OUTPUT
           fi
 
-  # Report pending status to apks
-  report_pending:
-    name: Report Pending
-    needs: [resolve]
-    runs-on: ubuntu-latest
-    steps:
       - name: Set pending commit status
         uses: actions/github-script@v7
         with:
@@ -56,7 +50,7 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: 'Mengzhiyaa',
               repo: 'apk',
-              sha: '${{ needs.resolve.outputs.sha }}',
+              sha: '${{ steps.resolve.outputs.sha }}',
               state: 'pending',
               target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
               context: 'apk-build / tests',
@@ -65,7 +59,7 @@ jobs:
 
   test_linux:
     name: Test Linux
-    needs: [resolve, report_pending]
+    needs: [resolve]
     uses: ./.github/workflows/test-linux.yml
     secrets: inherit
     with:
@@ -73,7 +67,7 @@ jobs:
 
   test_macos:
     name: Test macOS
-    needs: [resolve, report_pending]
+    needs: [resolve]
     uses: ./.github/workflows/test-macos.yml
     secrets: inherit
     with:
@@ -81,7 +75,7 @@ jobs:
 
   test_windows:
     name: Test Windows
-    needs: [resolve, report_pending]
+    needs: [resolve]
     uses: ./.github/workflows/test-windows.yml
     secrets: inherit
     with:
@@ -89,7 +83,7 @@ jobs:
 
   test_libpy:
     name: Test libpy Multi-Python
-    needs: [resolve, report_pending]
+    needs: [resolve]
     uses: ./.github/workflows/test-libpy.yml
     secrets: inherit
     with:
@@ -97,7 +91,7 @@ jobs:
 
   test_pybridge:
     name: Test pybridge CPython ABI Matrix
-    needs: [resolve, report_pending]
+    needs: [resolve]
     uses: ./.github/workflows/test-pybridge.yml
     secrets: inherit
     with:
