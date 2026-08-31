@@ -56,6 +56,10 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # This full-workspace job is the writer for the shared
+          # ubuntu-latest/x64 dependency cache used by the libpy matrix.
+          shared-key: linux-ubuntu-latest
 
       - name: Check formatting
         run: cargo fmt --all -- --check

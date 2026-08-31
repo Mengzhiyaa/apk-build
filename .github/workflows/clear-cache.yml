@@ -1,0 +1,20 @@
+name: "Clear All Actions Caches"
+
+# Destructive maintenance workflow: it can only be started manually.
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  clear:
+    name: Clear all caches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all GitHub Actions caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh cache delete --all --succeed-on-no-caches

@@ -83,7 +83,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: pybridge-abi-${{ matrix.os }}-${{ matrix.arch }}-py${{ matrix.python }}
+          # The Linux ARM64 rows use the same Rust dependency cache. Preserve
+          # per-Python cache keys for the macOS and Windows rows.
+          shared-key: ${{ runner.os == 'Linux' && format('linux-{0}', matrix.os) || '' }}
+          key: ${{ runner.os != 'Linux' && format('pybridge-abi-{0}-{1}-py{2}', matrix.os, matrix.arch, matrix.python) || '' }}
+          save-if: ${{ runner.os != 'Linux' || matrix.python == '3.14' }}
 
       - name: Verify PyConfig ABI and initialize selected Python
         env:

@@ -124,7 +124,16 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: libpy-${{ matrix.os }}-python-${{ matrix.python }}
+          # Linux rows share Rust dependencies by runner image. Keep the
+          # existing per-Python cache separation on macOS and Windows.
+          shared-key: ${{ runner.os == 'Linux' && format('linux-{0}', matrix.os) || '' }}
+          key: ${{ runner.os != 'Linux' && format('libpy-{0}-python-{1}', matrix.os, matrix.python) || '' }}
+
+          # test-linux writes the ubuntu-latest cache. Python 3.8 is the
+          # broader ubuntu-22.04 row and is that image's only cache writer.
+          save-if: >-
+            ${{ runner.os != 'Linux' ||
+                (matrix.os == 'ubuntu-22.04' && matrix.python == '3.8') }}
 
       - name: Set APK_PYTHON_PATH
         run: python -c "import os, sys; open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8').write(f'APK_PYTHON_PATH={sys.executable}\n')"
