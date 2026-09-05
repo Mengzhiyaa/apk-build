@@ -66,6 +66,11 @@ jobs:
             runtime_tests: true
 
     steps:
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+
       - name: Checkout apk source
         uses: actions/checkout@v4
         with:

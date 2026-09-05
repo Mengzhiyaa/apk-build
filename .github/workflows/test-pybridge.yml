@@ -51,6 +51,11 @@ jobs:
             python: "3.14"
 
     steps:
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+
       - name: Checkout apk source
         uses: actions/checkout@v7
         with:
