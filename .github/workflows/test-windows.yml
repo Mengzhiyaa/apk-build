@@ -167,14 +167,14 @@ jobs:
       - name: Run APK Optional-Dependency Coverage
         shell: pwsh
         run: |
-          cargo test -p apk --test kernel_suite 'kernel_widget::'
-          cargo test -p apk --test kernel_suite 'kernel_plots::'
-          cargo test -p apk --test kernel_background_suite 'kernel_plots_background::'
-          cargo test -p apk --test kernel_notebook_suite 'kernel_plots_notebook::'
-          cargo test -p apk --test kernel_notebook_suite 'kernel_mpl_split_cells::'
-          cargo test -p apk --test integration test_dataframe_resolve
-          cargo test -p apk --test integration test_matplotlib_backend_load
-          cargo test -p apk --test integration test_matplotlib_after_display_override
+          cargo test -p apk --features lsp --test kernel_suite 'kernel_widget::'
+          cargo test -p apk --features lsp --test kernel_suite 'kernel_plots::'
+          cargo test -p apk --features lsp --test kernel_background_suite 'kernel_plots_background::'
+          cargo test -p apk --features lsp --test kernel_notebook_suite 'kernel_plots_notebook::'
+          cargo test -p apk --features lsp --test kernel_notebook_suite 'kernel_mpl_split_cells::'
+          cargo test -p apk --features lsp --test integration test_dataframe_resolve
+          cargo test -p apk --features lsp --test integration test_matplotlib_backend_load
+          cargo test -p apk --features lsp --test integration test_matplotlib_after_display_override
 
       # ----------------------------------------------------------------
       # Targeted libpy Windows regression capture.

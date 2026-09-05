@@ -15,8 +15,8 @@ jobs:
     timeout-minutes: 75
 
     # Python 3.7 and the macOS-only Python 3.9 compatibility row remain
-    # best-effort. The other legacy rows also host blocking pybridge ABI and/or
-    # native-debugger checks, so their libpy steps opt into soft failure below
+    # best-effort. The other legacy rows also host blocking pybridge ABI
+    # checks, so their libpy steps opt into soft failure below
     # instead of making the entire shared runner allow-failure.
     continue-on-error: ${{ matrix.python == '3.7' || (matrix.os == 'macos-15-intel' && matrix.python == '3.9') }}
 
@@ -178,24 +178,6 @@ jobs:
         env:
           APK_TEST_SESSION_MODE: notebook
         run: cargo test -p apk --test kernel_notebook_suite kernel_plots_notebook::test_notebook_mode_sends_display_data_for_matplotlib -- --exact --nocapture --test-threads=1
-
-      # These versions used to be four separate ubuntu-latest jobs. Keep the
-      # test blocking even on Python 3.8, whose libpy compatibility checks are
-      # best-effort.
-      - name: Resolve Python executable for native debugger tests
-        if: ${{ runner.os == 'Linux' && (matrix.python == '3.8' || matrix.python == '3.11' || matrix.python == '3.13' || matrix.python == '3.14') }}
-        run: |
-          python -m venv .venv-apk-debug-tests
-          echo "APK_PYTHON_PATH=$GITHUB_WORKSPACE/.venv-apk-debug-tests/bin/python" >> "$GITHUB_ENV"
-
-      - name: Run native debugger behavior tests
-        if: ${{ runner.os == 'Linux' && (matrix.python == '3.8' || matrix.python == '3.11' || matrix.python == '3.13' || matrix.python == '3.14') }}
-        env:
-          CC: /usr/bin/gcc
-          CXX: /usr/bin/g++
-        run: >-
-          cargo test -p apk --features lsp --test kernel_suite
-          kernel_debug::test_native_console_dap_breakpoint_evaluate_and_step
 
   # Release builds above are blocking. Keep unusual Windows layouts as
   # best-effort diagnostics because they cannot install the normal plot suite.

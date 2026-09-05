@@ -1,0 +1,65 @@
+name: "Test APK - Debugger Acceptance"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The commit SHA from the apk repository"
+        type: string
+
+jobs:
+  debug_python_matrix:
+    name: "Debugger: Python ${{ matrix.python }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout apk source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install ZeroMQ
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Select matrix interpreter
+        run: echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-ubuntu-latest
+          key: debugger-py${{ matrix.python }}
+
+      - name: Run debugger unit tests
+        run: cargo test -p apk --features lsp,debug-metrics --lib
+
+      - name: Run debugger protocol and lifecycle regressions
+        run: >-
+          cargo test -p apk --features lsp,debug-metrics --test kernel_suite
+          kernel_debug:: -- --skip kernel_debug::regression::test_zero_overhead_callback_gates
+
+      - name: Run native debugger shutdown acceptance
+        run: cargo test -p apk --features lsp,debug-metrics --test kernel_suite kernel_shutdown::test_native
+
+      - name: Run zero-overhead callback-count gates
+        run: cargo test -p apk --features lsp,debug-metrics --test kernel_suite kernel_debug::regression::test_zero_overhead_callback_gates -- --exact
