@@ -1,0 +1,337 @@
+name: "Benchmark APK"
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        description: "The APK commit SHA to benchmark"
+        type: string
+      source_ref:
+        required: false
+        description: "The APK branch/ref"
+        default: "main"
+        type: string
+      run_codspeed:
+        required: false
+        description: "Build and run the CodSpeed simulation target"
+        default: false
+        type: boolean
+  repository_dispatch:
+    types: [run-benchmarks]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        description: "The APK commit SHA to benchmark"
+        type: string
+      source_ref:
+        required: false
+        description: "The APK branch/ref"
+        default: "main"
+        type: string
+      run_codspeed:
+        required: false
+        description: "Build and run the CodSpeed simulation target"
+        default: false
+        type: boolean
+
+concurrency:
+  group: benchmark-${{ github.event.client_payload.sha || inputs.source_sha }}
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    name: Resolve benchmark source
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      run_codspeed: ${{ steps.resolve.outputs.run_codspeed }}
+    steps:
+      - name: Resolve dispatch payload
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ github.event.client_payload.ref }}" >> "$GITHUB_OUTPUT"
+            echo "run_codspeed=${{ github.event.client_payload.run_codspeed || 'false' }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ inputs.source_sha }}" >> "$GITHUB_OUTPUT"
+            echo "ref=${{ inputs.source_ref }}" >> "$GITHUB_OUTPUT"
+            echo "run_codspeed=${{ inputs.run_codspeed }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set pending commit status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ steps.resolve.outputs.sha }}',
+              state: 'pending',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / benchmarks',
+              description: 'Benchmark checks are running...'
+            });
+
+  bench-smoke:
+    name: Benchmark compile and lint smoke
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout APK source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: apk-benchmark-py313
+          ignore-nothing-to-cache: true
+
+      - name: Install benchmark Python dependencies
+        run: |
+          uv pip install "numpy>=1.26" "pandas>=2.1" "matplotlib>=3.8" "debugpy>=1.8" "scanpy>=1.12"
+          echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-linux
+
+      - name: Lint micro benchmarks
+        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features micro -- -D warnings
+
+      - name: Lint protocol benchmarks
+        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features kernel -- -D warnings
+
+      - name: Lint diagnostic worker
+        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features diagnostics -- -D warnings
+
+  bench-micro:
+    name: Criterion micro benchmarks
+    needs: [resolve, bench-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout APK source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-linux
+
+      - name: Run Criterion micro benchmarks
+        run: cargo bench -p apk_benchmark --no-default-features --features micro --bench micro -- --noplot
+
+      - name: Upload Criterion reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ needs.resolve.outputs.sha }}
+          path: target/criterion
+          if-no-files-found: warn
+
+  bench-kernel:
+    name: Production kernel benchmarks
+    needs: [resolve, bench-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout APK source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: true
+          cache-suffix: apk-benchmark-py313
+          ignore-nothing-to-cache: true
+
+      - name: Install benchmark Python dependencies
+        run: uv pip install "numpy>=1.26" "pandas>=2.1" "matplotlib>=3.8" "debugpy>=1.8"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-kernel-linux
+
+      - name: Build production APK
+        run: cargo build -p apk --bin apk --release --features lsp --target-dir target/bench-production
+
+      - name: Create registration file
+        shell: bash
+        run: |
+          registration_file="$RUNNER_TEMP/apk-benchmark-registration.json"
+          registration_port=$(python - <<'PY'
+          import socket
+          with socket.socket() as sock:
+              sock.bind(("127.0.0.1", 0))
+              print(sock.getsockname()[1])
+          PY
+          )
+          python - "$registration_file" "$registration_port" <<'PY'
+          import json, secrets, sys
+          path, port = sys.argv[1], int(sys.argv[2])
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump({
+                  "transport": "tcp",
+                  "signature_scheme": "hmac-sha256",
+                  "ip": "127.0.0.1",
+                  "key": secrets.token_hex(16),
+                  "registration_port": port,
+              }, stream)
+          PY
+          echo "APK_BENCH_CONNECTION_FILE=$registration_file" >> "$GITHUB_ENV"
+          echo "APK_BENCH_KERNEL=$GITHUB_WORKSPACE/target/bench-production/release/apk" >> "$GITHUB_ENV"
+          echo "APK_BENCH_KERNEL_ARGS_JSON=[\"--connection-file\",\"$registration_file\",\"--session-mode\",\"console\"]" >> "$GITHUB_ENV"
+          echo "APK_BENCH_PYTHON_VERSION=$(python --version 2>&1)" >> "$GITHUB_ENV"
+
+      - name: Run production protocol benchmark
+        run: cargo bench -p apk_benchmark --no-default-features --features kernel --bench kernel -- --noplot
+
+      - name: Run UI and Variables benchmarks
+        run: |
+          cargo bench -p apk_benchmark --no-default-features --features kernel --bench ui -- --noplot
+          cargo bench -p apk_benchmark --no-default-features --features kernel --bench variables -- --noplot
+
+      - name: Run Data Explorer and introspection benchmarks
+        run: |
+          cargo bench -p apk_benchmark --no-default-features --features kernel --bench introspection -- --noplot
+
+      - name: Run Data Explorer benchmark in Notebook mode
+        run: |
+          export APK_BENCH_KERNEL_ARGS_JSON="[\"--connection-file\",\"$APK_BENCH_CONNECTION_FILE\",\"--session-mode\",\"notebook\"]"
+          cargo bench -p apk_benchmark --no-default-features --features kernel --bench data_explorer -- --noplot
+
+      - name: Upload production benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-benchmarks-${{ needs.resolve.outputs.sha }}
+          path: target/criterion
+          if-no-files-found: warn
+
+  codspeed-simulation:
+    name: CodSpeed simulation
+    if: needs.resolve.outputs.run_codspeed == 'true'
+    needs: [resolve, bench-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout APK source
+        uses: actions/checkout@v4
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ needs.resolve.outputs.sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libzmq3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: benchmark-codspeed-linux
+
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --locked
+
+      - name: Build CodSpeed simulation target
+        run: cargo codspeed build -p apk_benchmark --no-default-features --features micro,codspeed --bench micro -m simulation
+
+      - name: Run CodSpeed simulation
+        run: cargo codspeed run -m simulation --bench micro
+
+  report-status:
+    name: Report benchmark status
+    if: always()
+    needs: [resolve, bench-smoke, bench-micro, bench-kernel, codspeed-simulation]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine result
+        id: result
+        shell: bash
+        run: |
+          if [ "${{ needs.bench-smoke.result }}" = "success" ] && [ "${{ needs.bench-micro.result }}" = "success" ] && [ "${{ needs.bench-kernel.result }}" = "success" ]; then
+            if [ "${{ needs.codspeed-simulation.result }}" = "failure" ] || [ "${{ needs.codspeed-simulation.result }}" = "cancelled" ]; then
+              echo "state=failure" >> "$GITHUB_OUTPUT"
+              echo "description=CodSpeed simulation failed" >> "$GITHUB_OUTPUT"
+            else
+              echo "state=success" >> "$GITHUB_OUTPUT"
+              echo "description=Benchmark checks passed" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "state=failure" >> "$GITHUB_OUTPUT"
+            echo "description=Benchmark checks failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set final commit status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: 'Mengzhiyaa',
+              repo: 'apk',
+              sha: '${{ needs.resolve.outputs.sha }}',
+              state: '${{ steps.result.outputs.state }}',
+              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+              context: 'apk-build / benchmarks',
+              description: '${{ steps.result.outputs.description }}'
+            });
