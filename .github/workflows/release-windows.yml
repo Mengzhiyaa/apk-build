@@ -39,7 +39,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -70,7 +70,7 @@ jobs:
           Compress-Archive @params
 
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk-release-windows-${{ matrix.arch }}-archive
           path: apk-${{ inputs.version }}-windows-${{ matrix.arch }}.zip

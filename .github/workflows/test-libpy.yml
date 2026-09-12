@@ -72,7 +72,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout apk source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -85,7 +85,7 @@ jobs:
 
       - name: Set up MSVC Developer Command Prompt
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
         with:
           arch: x64
 
@@ -129,16 +129,21 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Linux rows share Rust dependencies by runner image. Keep the
-          # existing per-Python cache separation on macOS and Windows.
-          shared-key: ${{ runner.os == 'Linux' && format('linux-{0}', matrix.os) || '' }}
-          key: ${{ runner.os != 'Linux' && format('libpy-{0}-python-{1}', matrix.os, matrix.python) || '' }}
+          # Python versions share a cache within the same runner image and
+          # architecture. Keep distro/image boundaries explicit because native
+          # dependency artifacts are not portable between them.
+          shared-key: >-
+            ${{ matrix.os == 'ubuntu-latest' && 'rust-test-linux-ubuntu-latest-x64' ||
+                matrix.os == 'ubuntu-22.04' && 'rust-test-linux-ubuntu-22.04-x64' ||
+                matrix.os == 'macos-latest' && 'rust-test-macos-latest-arm64' ||
+                matrix.os == 'macos-15-intel' && 'rust-test-macos-15-intel-x64' ||
+                matrix.os == 'windows-latest' && 'rust-test-windows-latest-x64' }}
 
-          # test-linux writes the ubuntu-latest cache. Python 3.8 is the
-          # broader ubuntu-22.04 row and is that image's only cache writer.
+          # The fixed-platform test jobs are the writers for the common
+          # macOS/Windows caches. Ubuntu 22.04 has no fixed-platform job, so
+          # its Python 3.8 row is the sole writer for that image.
           save-if: >-
-            ${{ runner.os != 'Linux' ||
-                (matrix.os == 'ubuntu-22.04' && matrix.python == '3.8') }}
+            ${{ matrix.os == 'ubuntu-22.04' && matrix.python == '3.8' }}
 
       - name: Set APK_PYTHON_PATH
         run: python -c "import os, sys; open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8').write(f'APK_PYTHON_PATH={sys.executable}\n')"

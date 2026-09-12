@@ -22,7 +22,7 @@ jobs:
       RUST_BACKTRACE: "1"
     steps:
       - name: Checkout apk source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -47,8 +47,9 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-ubuntu-latest
-          key: debugger-py${{ matrix.python }}
+          # Reuse the canonical x64 Ubuntu cache written by test-linux.
+          shared-key: rust-test-linux-ubuntu-latest-x64
+          save-if: false
 
       - name: Run debugger unit tests
         run: cargo test -p apk --features lsp,debug-metrics --lib

@@ -59,7 +59,7 @@ jobs:
       IS_PRERELEASE: ${{ steps.extract_version.outputs.prerelease }}
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ needs.resolve.outputs.sha }}
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set pending commit status
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
@@ -141,37 +141,37 @@ jobs:
     steps:
       # Download all platform binaries
       - name: Download Linux x64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-linux-x64-archive
 
       - name: Download Linux arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-linux-arm64-archive
 
       - name: Download macOS arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-darwin-arm64-archive
 
       - name: Download macOS x64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-darwin-x64-archive
 
       - name: Download macOS universal
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-darwin-universal-archive
 
       - name: Download Windows x64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-windows-x64-archive
 
       - name: Download Windows arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-windows-arm64-archive
 
@@ -213,7 +213,7 @@ jobs:
           fi
 
       - name: Report commit status to apks
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |

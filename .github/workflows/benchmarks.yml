@@ -15,7 +15,7 @@ on:
       run_codspeed:
         required: false
         description: "Build and run the CodSpeed simulation target"
-        default: false
+        default: true
         type: boolean
   repository_dispatch:
     types: [run-benchmarks]
@@ -33,7 +33,7 @@ on:
       run_codspeed:
         required: false
         description: "Build and run the CodSpeed simulation target"
-        default: false
+        default: true
         type: boolean
 
 concurrency:
@@ -56,7 +56,7 @@ jobs:
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
             echo "ref=${{ github.event.client_payload.ref }}" >> "$GITHUB_OUTPUT"
-            echo "run_codspeed=${{ github.event.client_payload.run_codspeed || 'false' }}" >> "$GITHUB_OUTPUT"
+            echo "run_codspeed=${{ github.event.client_payload.run_codspeed || 'true' }}" >> "$GITHUB_OUTPUT"
           else
             echo "sha=${{ inputs.source_sha }}" >> "$GITHUB_OUTPUT"
             echo "ref=${{ inputs.source_ref }}" >> "$GITHUB_OUTPUT"
@@ -64,7 +64,7 @@ jobs:
           fi
 
       - name: Set pending commit status
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
@@ -85,7 +85,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout APK source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ needs.resolve.outputs.sha }}
@@ -97,13 +97,14 @@ jobs:
           sudo apt-get install -y libzmq3-dev
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.29"
           python-version: "3.13"
           activate-environment: true
           enable-cache: true
           cache-suffix: apk-benchmark-py313
+          cache-dependency-glob: Cargo.lock
           ignore-nothing-to-cache: true
 
       - name: Install benchmark Python dependencies
@@ -122,13 +123,13 @@ jobs:
           shared-key: benchmark-linux
 
       - name: Lint micro benchmarks
-        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features micro -- -D warnings
+        run: cargo clippy --locked -p apk_benchmark --all-targets --no-default-features --features micro -- -D warnings
 
       - name: Lint protocol benchmarks
-        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features kernel -- -D warnings
+        run: cargo clippy --locked -p apk_benchmark --all-targets --no-default-features --features kernel -- -D warnings
 
       - name: Lint diagnostic worker
-        run: cargo clippy -p apk_benchmark --all-targets --no-default-features --features diagnostics -- -D warnings
+        run: cargo clippy --locked -p apk_benchmark --all-targets --no-default-features --features diagnostics -- -D warnings
 
   bench-micro:
     name: Criterion micro benchmarks
@@ -137,7 +138,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout APK source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ needs.resolve.outputs.sha }}
@@ -157,11 +158,49 @@ jobs:
           shared-key: benchmark-linux
 
       - name: Run Criterion micro benchmarks
-        run: cargo bench -p apk_benchmark --no-default-features --features micro --bench micro -- --noplot
+        run: cargo bench --locked -p apk_benchmark --no-default-features --features micro --bench micro
+
+      - name: Generate visible benchmark chart
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          estimates = []
+          for path in pathlib.Path("target/criterion").glob("**/new/estimates.json"):
+              try:
+                  data = json.loads(path.read_text())
+                  value = data["mean"]["point_estimate"]
+              except (KeyError, TypeError, ValueError, OSError):
+                  continue
+              label = path.parent.parent.parent.relative_to("target/criterion").as_posix()
+              estimates.append((label, float(value)))
+          estimates.sort(key=lambda item: item[1])
+          estimates = estimates[:30]
+          width, row, margin = 1200, 28, 280
+          height = max(180, margin + row * len(estimates))
+          maximum = max((value for _, value in estimates), default=1.0)
+          svg = [
+              f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+              '<rect width="100%" height="100%" fill="white"/>',
+              '<text x="24" y="34" font-family="sans-serif" font-size="24" font-weight="bold">APK benchmark mean time (ns)</text>',
+          ]
+          for index, (label, value) in enumerate(estimates):
+              y = margin + index * row
+              bar = int((width - margin - 40) * value / maximum)
+              svg.append(f'<text x="24" y="{y}" font-family="monospace" font-size="14">{label[:34]}</text>')
+              svg.append(f'<rect x="{margin}" y="{y - 15}" width="{max(1, bar)}" height="16" fill="#2f81f7"/>')
+              svg.append(f'<text x="{margin + bar + 8}" y="{y - 2}" font-family="sans-serif" font-size="12">{value:.0f}</text>')
+          svg.append('</svg>')
+          output = pathlib.Path("target/criterion/benchmark-summary.svg")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text("\n".join(svg), encoding="utf-8")
+          PY
 
       - name: Upload Criterion reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-${{ needs.resolve.outputs.sha }}
           path: target/criterion
@@ -174,7 +213,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout APK source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ needs.resolve.outputs.sha }}
@@ -186,13 +225,14 @@ jobs:
           sudo apt-get install -y libzmq3-dev
 
       - name: Set up Python
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.11.29"
           python-version: "3.13"
           activate-environment: true
           enable-cache: true
           cache-suffix: apk-benchmark-py313
+          cache-dependency-glob: Cargo.lock
           ignore-nothing-to-cache: true
 
       - name: Install benchmark Python dependencies
@@ -207,7 +247,7 @@ jobs:
           shared-key: benchmark-kernel-linux
 
       - name: Build production APK
-        run: cargo build -p apk --bin apk --release --features lsp --target-dir target/bench-production
+        run: cargo build --locked -p apk --bin apk --release --features lsp --target-dir target/bench-production
 
       - name: Create registration file
         shell: bash
@@ -238,25 +278,62 @@ jobs:
           echo "APK_BENCH_PYTHON_VERSION=$(python --version 2>&1)" >> "$GITHUB_ENV"
 
       - name: Run production protocol benchmark
-        run: cargo bench -p apk_benchmark --no-default-features --features kernel --bench kernel -- --noplot
+        run: cargo bench --locked -p apk_benchmark --no-default-features --features kernel --bench kernel
 
       - name: Run UI and Variables benchmarks
         run: |
-          cargo bench -p apk_benchmark --no-default-features --features kernel --bench ui -- --noplot
-          cargo bench -p apk_benchmark --no-default-features --features kernel --bench variables -- --noplot
+          cargo bench --locked -p apk_benchmark --no-default-features --features kernel --bench ui
+          cargo bench --locked -p apk_benchmark --no-default-features --features kernel --bench variables
 
       - name: Run Data Explorer and introspection benchmarks
         run: |
-          cargo bench -p apk_benchmark --no-default-features --features kernel --bench introspection -- --noplot
+          cargo bench --locked -p apk_benchmark --no-default-features --features kernel --bench introspection
 
       - name: Run Data Explorer benchmark in Notebook mode
         run: |
           export APK_BENCH_KERNEL_ARGS_JSON="[\"--connection-file\",\"$APK_BENCH_CONNECTION_FILE\",\"--session-mode\",\"notebook\"]"
-          cargo bench -p apk_benchmark --no-default-features --features kernel --bench data_explorer -- --noplot
+          cargo bench --locked -p apk_benchmark --no-default-features --features kernel --bench data_explorer
+
+      - name: Generate visible kernel benchmark chart
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+
+          rows = []
+          for path in pathlib.Path("target/criterion").glob("**/new/estimates.json"):
+              try:
+                  value = float(json.loads(path.read_text())["mean"]["point_estimate"])
+              except (KeyError, TypeError, ValueError, OSError):
+                  continue
+              label = path.parent.parent.parent.relative_to("target/criterion").as_posix()
+              rows.append((label, value))
+          rows.sort(key=lambda item: item[1])
+          rows = rows[:40]
+          width, row, margin = 1200, 28, 280
+          height = max(180, margin + row * len(rows))
+          maximum = max((value for _, value in rows), default=1.0)
+          svg = [
+              f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
+              '<rect width="100%" height="100%" fill="white"/>',
+              '<text x="24" y="34" font-family="sans-serif" font-size="24" font-weight="bold">APK kernel benchmark mean time (ns)</text>',
+          ]
+          for index, (label, value) in enumerate(rows):
+              y = margin + index * row
+              bar = int((width - margin - 40) * value / maximum)
+              svg.append(f'<text x="24" y="{y}" font-family="monospace" font-size="14">{label[:34]}</text>')
+              svg.append(f'<rect x="{margin}" y="{y - 15}" width="{max(1, bar)}" height="16" fill="#238636"/>')
+              svg.append(f'<text x="{margin + bar + 8}" y="{y - 2}" font-family="sans-serif" font-size="12">{value:.0f}</text>')
+          svg.append('</svg>')
+          output = pathlib.Path("target/criterion/kernel-benchmark-summary.svg")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text("\n".join(svg), encoding="utf-8")
+          PY
 
       - name: Upload production benchmark reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kernel-benchmarks-${{ needs.resolve.outputs.sha }}
           path: target/criterion
@@ -270,7 +347,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout APK source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ needs.resolve.outputs.sha }}
@@ -322,7 +399,7 @@ jobs:
           fi
 
       - name: Set final commit status
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |

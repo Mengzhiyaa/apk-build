@@ -65,7 +65,7 @@ jobs:
 
       - name: Set up MSVC Developer Command Prompt
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
         with:
           arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
 
@@ -88,11 +88,13 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # The Linux ARM64 rows use the same Rust dependency cache. Preserve
-          # per-Python cache keys for the macOS and Windows rows.
-          shared-key: ${{ runner.os == 'Linux' && format('linux-{0}', matrix.os) || '' }}
-          key: ${{ runner.os != 'Linux' && format('pybridge-abi-{0}-{1}-py{2}', matrix.os, matrix.arch, matrix.python) || '' }}
-          save-if: ${{ runner.os != 'Linux' || matrix.python == '3.14' }}
+          # Python versions share Rust dependencies within the same platform.
+          shared-key: >-
+            ${{ matrix.os == 'macos-15-intel' && 'rust-test-macos-15-intel-x64' ||
+                matrix.os == 'ubuntu-24.04-arm' && 'rust-test-linux-ubuntu-24.04-arm64' ||
+                matrix.os == 'windows-11-arm' && 'rust-test-windows-11-arm64' }}
+          # One writer per platform group; the 3.14 row is the canonical one.
+          save-if: ${{ matrix.python == '3.14' }}
 
       - name: Verify PyConfig ABI and initialize selected Python
         env:

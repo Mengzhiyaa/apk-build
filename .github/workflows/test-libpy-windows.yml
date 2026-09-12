@@ -53,7 +53,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout apk source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -108,7 +108,7 @@ jobs:
 
       - name: Set up Python ${{ matrix.python-version }} (launcher)
         if: matrix.install-method == 'launcher'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -204,7 +204,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: libpy-windows-${{ matrix.label }}
+          # Reuse the canonical Windows x64 cache. Python layout variants do
+          # not need independent Rust dependency caches.
+          shared-key: rust-test-windows-latest-x64
+          save-if: false
 
       - name: Run libpy integration tests (capture, allow failure)
         id: libpy_integration
@@ -225,7 +228,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: libpy-windows-${{ matrix.label }}-logs
           path: |

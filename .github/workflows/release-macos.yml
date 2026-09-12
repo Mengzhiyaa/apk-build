@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -87,7 +87,7 @@ jobs:
           popd
 
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk-release-darwin-${{ matrix.arch }}-archive
           path: apk-${{ inputs.version }}-darwin-${{ matrix.arch }}.zip
@@ -101,7 +101,7 @@ jobs:
 
     steps:
       - name: Checkout sources (for LICENSE only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -110,12 +110,12 @@ jobs:
             LICENSE
 
       - name: Download macOS arm64 kernel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-darwin-arm64-archive
 
       - name: Download macOS x64 kernel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk-release-darwin-x64-archive
 
@@ -142,7 +142,7 @@ jobs:
           zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
 
       - name: Upload universal archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk-release-darwin-universal-archive
           path: apk-${{ inputs.version }}-darwin-universal.zip

@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
@@ -70,7 +70,7 @@ jobs:
           popd
 
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk-release-linux-${{ matrix.arch }}-archive
           path: apk-${{ inputs.version }}-linux-${{ matrix.arch }}.zip
