@@ -113,6 +113,7 @@ jobs:
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       source_ref: ${{ needs.resolve.outputs.ref }}
+      benchmark_mode: smoke
 
   # Report final status back to apks
   report_status:

@@ -12,6 +12,11 @@ on:
         description: "The APK branch/ref"
         default: "main"
         type: string
+      benchmark_mode:
+        required: false
+        description: "Run a functional smoke check or collect performance measurements"
+        default: "performance"
+        type: string
   repository_dispatch:
     types: [run-benchmarks]
   workflow_dispatch:
@@ -27,7 +32,7 @@ on:
         type: string
 
 concurrency:
-  group: benchmark-${{ github.event.client_payload.sha || inputs.source_sha }}
+  group: benchmark-${{ github.event.client_payload.sha || inputs.source_sha }}-${{ inputs.benchmark_mode || 'performance' }}
   cancel-in-progress: true
 
 jobs:
@@ -37,6 +42,7 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       ref: ${{ steps.resolve.outputs.ref }}
+      mode: ${{ steps.resolve.outputs.mode }}
     steps:
       - name: Resolve dispatch payload
         id: resolve
@@ -49,8 +55,14 @@ jobs:
             echo "sha=${{ inputs.source_sha }}" >> "$GITHUB_OUTPUT"
             echo "ref=${{ inputs.source_ref }}" >> "$GITHUB_OUTPUT"
           fi
+          mode="${{ inputs.benchmark_mode }}"
+          if [ -z "$mode" ]; then
+            mode="performance"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Set pending commit status
+        if: steps.resolve.outputs.mode == 'performance'
         uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
@@ -98,11 +110,14 @@ jobs:
           cache-dependency-glob: Cargo.lock
           ignore-nothing-to-cache: true
 
-      - name: Install benchmark Python dependencies
+      - name: Install performance benchmark Python dependencies
+        if: needs.resolve.outputs.mode == 'performance'
         run: |
           uv pip install "scanpy>=1.12" "ipywidgets>=8.1" "matplotlib>=3.8" "numpy>=1.26" "pandas>=2.1"
-          echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
           python -c "import ipywidgets, matplotlib, numpy, pandas, scanpy; print('Benchmark dependencies ready')"
+
+      - name: Select benchmark Python
+        run: echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -115,39 +130,47 @@ jobs:
           shared-key: benchmark-phase-a-linux-py313
 
       - name: Lint benchmark crate
+        if: needs.resolve.outputs.mode == 'performance'
         run: cargo clippy --locked -p apk_benchmark --all-targets --features lsp -- -D warnings
 
       - name: Run core feature-overhead suite
+        if: needs.resolve.outputs.mode == 'performance'
         run: |
           cargo run --locked --release -p apk_benchmark --features lsp -- run \
             --suite core \
+            --pure-python-baseline all \
             --repetitions 5 \
             --iterations 10 \
             --warmup 3 \
             --output target/bench/core.json
 
       - name: Render core report
+        if: needs.resolve.outputs.mode == 'performance'
         run: |
           cargo run --locked --release -p apk_benchmark --features lsp -- report \
             target/bench/core.json \
             --html target/bench/core.html
 
       - name: Run Scanpy comprehensive suite
+        if: needs.resolve.outputs.mode == 'performance'
         run: |
           cargo run --locked --release -p apk_benchmark --features lsp -- run \
             --suite scanpy \
+            --pure-python-baseline all \
             --repetitions 5 \
             --iterations 1 \
             --warmup 3 \
             --output target/bench/scanpy.json
 
       - name: Render Scanpy report
+        if: needs.resolve.outputs.mode == 'performance'
         run: |
           cargo run --locked --release -p apk_benchmark --features lsp -- report \
             target/bench/scanpy.json \
             --html target/bench/scanpy.html
 
       - name: Add Scanpy comparison to job summary
+        if: needs.resolve.outputs.mode == 'performance'
         shell: bash
         run: |
           {
@@ -161,8 +184,26 @@ jobs:
               done
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish benchmark summary
-        if: always()
+      - name: Run benchmark smoke check
+        if: needs.resolve.outputs.mode == 'smoke'
+        run: |
+          cargo run --locked --release -p apk_benchmark --features lsp -- run \
+            --suite pr-quick \
+            --pure-python-baseline noop \
+            --repetitions 1 \
+            --iterations 3 \
+            --warmup 1 \
+            --output target/bench/smoke.json
+
+      - name: Render smoke report
+        if: needs.resolve.outputs.mode == 'smoke'
+        run: |
+          cargo run --locked --release -p apk_benchmark --features lsp -- report \
+            target/bench/smoke.json \
+            --html target/bench/smoke.html
+
+      - name: Publish performance benchmark summary
+        if: always() && needs.resolve.outputs.mode == 'performance'
         shell: bash
         run: |
           {
@@ -172,10 +213,30 @@ jobs:
             echo "- Ref: \`${{ needs.resolve.outputs.ref }}\`"
             echo "- Python: \`${APK_PYTHON_PATH:-unavailable}\`"
             echo "- Cargo profile: \`release\` with LTO disabled"
+            echo "- Pure Python baseline: all selected workloads"
             echo "- Core result: \`target/bench/core.json\`"
             echo "- Scanpy result: \`target/bench/scanpy.json\`"
             echo
             echo "Performance results are informational; this workflow fails only when benchmark setup or execution fails."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish benchmark smoke summary
+        if: always() && needs.resolve.outputs.mode == 'smoke'
+        shell: bash
+        run: |
+          {
+            echo "## APK benchmark smoke check"
+            echo
+            echo "- Source: \`${{ needs.resolve.outputs.sha }}\`"
+            echo "- Ref: \`${{ needs.resolve.outputs.ref }}\`"
+            echo "- Suite: \`pr-quick\`"
+            echo "- Repetitions: \`1\`"
+            echo "- Iterations: \`3\`"
+            echo "- Warmup: \`1\`"
+            echo "- Pure Python baseline: \`noop-request\`"
+            echo "- Result: \`target/bench/smoke.json\`"
+            echo
+            echo "This run verifies that the benchmark completes successfully; it is not a performance measurement."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Phase A reports
@@ -263,7 +324,7 @@ jobs:
           shared-key: benchmark-session-${{ runner.os }}-py313
 
       - name: Run session smoke benchmark
-        run: cargo run --locked --release -p apk_benchmark --features lsp -- run --suite session-smoke --session-mode ${{ matrix.session }} --repetitions 1 --iterations 3 --warmup 1 --output target/bench/${{ matrix.session }}.json
+        run: cargo run --locked --release -p apk_benchmark --features lsp -- run --suite session-smoke --session-mode ${{ matrix.session }} --pure-python-baseline none --repetitions 1 --iterations 3 --warmup 1 --output target/bench/${{ matrix.session }}.json
 
       - name: Render session smoke report
         run: cargo run --locked --release -p apk_benchmark --features lsp -- report target/bench/${{ matrix.session }}.json --html target/bench/${{ matrix.session }}.html
@@ -298,6 +359,7 @@ jobs:
           fi
 
       - name: Set final commit status
+        if: needs.resolve.outputs.mode == 'performance'
         uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
