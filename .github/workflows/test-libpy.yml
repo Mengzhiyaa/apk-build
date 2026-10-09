@@ -161,10 +161,17 @@ jobs:
       # Reuse this already-provisioned runner for every pybridge ABI row that
       # previously used the same OS/architecture/Python combination. The
       # remaining Intel macOS and native ARM64 rows stay in test-pybridge.yml.
-      - name: Verify PyConfig ABI and initialize selected Python
+      - name: Verify PyConfig ABI
         if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14') }}
         env:
           APK_VERIFY_PYCONFIG_ABI: "1"
+        run: >-
+          cargo test -p pybridge --lib
+          pyconfig_abi::tests::selected_cpython_headers_match_table
+          -- --exact --nocapture
+
+      - name: Run pybridge tests
+        if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14') }}
         run: cargo test -p pybridge -- --nocapture --test-threads=1
 
       - name: Initialize the selected Python through pybridge

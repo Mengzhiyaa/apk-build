@@ -96,9 +96,15 @@ jobs:
           # One writer per platform group; the 3.14 row is the canonical one.
           save-if: ${{ matrix.python == '3.14' }}
 
-      - name: Verify PyConfig ABI and initialize selected Python
+      - name: Verify PyConfig ABI
         env:
           # Makes the unit test compile a temporary C probe against the selected
           # Python.h. This is CI-only and is not part of APK's normal build.
           APK_VERIFY_PYCONFIG_ABI: "1"
+        run: >-
+          cargo test -p pybridge --lib
+          pyconfig_abi::tests::selected_cpython_headers_match_table
+          -- --exact --nocapture
+
+      - name: Run pybridge tests
         run: cargo test -p pybridge -- --nocapture --test-threads=1

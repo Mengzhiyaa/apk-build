@@ -19,7 +19,7 @@ jobs:
   # Build APK for macOS. Both arm64 (Apple Silicon) and x64 (Intel).
   build_macos:
     name: Build macOS (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
 
     env:
@@ -30,11 +30,11 @@ jobs:
         arch: [arm64, x64]
         include:
           - arch: arm64
+            os: macos-latest
             rust_target_prefix: aarch64
-            homebrew_folder: /opt/homebrew
           - arch: x64
+            os: macos-15-intel
             rust_target_prefix: x86_64
-            homebrew_folder: /usr/local
 
     steps:
       - name: Checkout sources
@@ -49,30 +49,8 @@ jobs:
           rustup update --no-self-update stable
           rustup default stable
 
-      - name: Install system dependencies (arm64)
-        if: matrix.arch == 'arm64'
-        run: brew install zeromq
-
-      - name: Setup for x86 cross-compiling
-        if: matrix.arch == 'x64'
-        run: |
-          # Install x86 homebrew
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-          # Install x86 zeromq
-          arch -x86_64 ${{ matrix.homebrew_folder }}/bin/brew install zeromq
-
-          # Install x86 Rust target
-          rustup target add x86_64-apple-darwin
-
-      - name: Update PATH for x86 pkg-config
-        if: matrix.arch == 'x64'
-        run: |
-          echo "${{ matrix.homebrew_folder }}/bin" >> $GITHUB_PATH
-
+      # The pinned zmq-sys builds and statically links bundled ZeroMQ.
       - name: Compile APK (${{ matrix.arch }})
-        env:
-          PKG_CONFIG_ALLOW_CROSS: 1
         run: |
           cargo build --release --target ${{ matrix.rust_target_prefix }}-apple-darwin --features lsp -p apk
 
