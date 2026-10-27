@@ -27,7 +27,7 @@ jobs:
         # jobs load the selected interpreter in-process and run real plot
         # pipelines in addition to libpy's symbol/ABI checks.
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
         experimental: [false]
         runtime_tests: [true]
         include:
@@ -162,7 +162,7 @@ jobs:
       # previously used the same OS/architecture/Python combination. The
       # remaining Intel macOS and native ARM64 rows stay in test-pybridge.yml.
       - name: Verify PyConfig ABI
-        if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14') }}
+        if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14' || matrix.python == '3.15') }}
         env:
           APK_VERIFY_PYCONFIG_ABI: "1"
         run: >-
@@ -171,11 +171,11 @@ jobs:
           -- --exact --nocapture
 
       - name: Run pybridge tests
-        if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14') }}
+        if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14' || matrix.python == '3.15') }}
         run: cargo test -p pybridge -- --nocapture --test-threads=1
 
       - name: Initialize the selected Python through pybridge
-        if: ${{ matrix.runtime_tests && runner.os == 'macOS' && matrix.python != '3.8' && matrix.python != '3.13' && matrix.python != '3.14' }}
+        if: ${{ matrix.runtime_tests && runner.os == 'macOS' && matrix.python != '3.8' && matrix.python != '3.13' && matrix.python != '3.14' && matrix.python != '3.15' }}
         continue-on-error: ${{ matrix.experimental }}
         run: cargo test -p pybridge --test integration test_initialized_ -- --nocapture --test-threads=1
 

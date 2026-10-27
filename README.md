@@ -31,12 +31,12 @@ jupyter console --kernel=apk
 
 ## CPython ABI Matrix
 
-The test workflow includes a blocking pybridge matrix for CPython 3.8–3.14.
+The test workflow includes a blocking pybridge matrix for CPython 3.8–3.15.
 For Python 3.8–3.13 it compiles a temporary probe against each selected
 installation's `Python.h` and compares `PyConfig` size, alignment, and field
 offsets with APK's checked-in ABI table. It then runs the real pybridge
-initialization tests against the matching shared library. Python 3.14 exercises
-the opaque `PyInitConfig` backend instead.
+initialization tests against the matching shared library. Python 3.14 and 3.15
+exercise the opaque `PyInitConfig` backend instead.
 
 Every versioned Unix 64-bit and Windows 64-bit table entry is checked. Separate
 Linux, macOS, and Windows ARM64 jobs cover the native release architectures.
@@ -45,7 +45,7 @@ The retained 32-bit tables are not currently part of the CI matrix; a future
 
 ## libpy Runtime Matrix
 
-The libpy workflow runs every supported Python version (3.10–3.14) on Linux,
+The libpy workflow runs every supported Python version (3.10–3.15) on Linux,
 macOS, and Windows. Each job loads and initializes the selected interpreter in
 the Rust process, verifies its executable and path configuration, creates a
 Matplotlib figure through APK's embedded backend, exercises the console plot
