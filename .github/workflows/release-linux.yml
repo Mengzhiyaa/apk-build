@@ -41,12 +41,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libzmq3-dev
 
+      - name: Set up uv Python environment
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+
       - name: Setup Build Environment
         run: |
           # Install cargo-zigbuild for glibc version control
           cargo install --locked cargo-zigbuild
-          sudo apt install -y python3-pip
-          pip3 install ziglang
+          uv pip install ziglang
 
       - name: Setup for arm64 cross-compiling
         if: matrix.arch == 'arm64'
