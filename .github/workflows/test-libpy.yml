@@ -10,15 +10,13 @@ on:
 
 jobs:
   libpy_matrix:
-    name: "libpy: Python ${{ matrix.python }} (${{ matrix.os }})"
+    name: "libpy ABI + runtime | ${{ matrix.os }} | CPython ${{ matrix.python }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
 
-    # Python 3.7 and the macOS-only Python 3.9 compatibility row remain
-    # best-effort. The other legacy rows also host blocking pybridge ABI
-    # checks, so their libpy steps opt into soft failure below
-    # instead of making the entire shared runner allow-failure.
-    continue-on-error: ${{ matrix.python == '3.7' || (matrix.os == 'macos-15-intel' && matrix.python == '3.9') }}
+    # Only unsupported Python 3.7 is informational. All 3.8–3.15 release
+    # interpreters and their ABI/runtime checks are required.
+    continue-on-error: ${{ matrix.python == '3.7' }}
 
     strategy:
       fail-fast: false
@@ -37,32 +35,31 @@ jobs:
             experimental: true
             runtime_tests: false
 
-          # Python 3.8/3.9 are below the supported runtime floor, but exercise
-          # the full interpreter and plotting suite on every desktop OS.
+          # Python 3.8/3.9 are supported and run the full interpreter/plot suite.
           # Use Intel macOS for these older CPython distributions.
           - os: ubuntu-22.04
             python: "3.8"
-            experimental: true
+            experimental: false
             runtime_tests: true
           - os: macos-15-intel
             python: "3.8"
-            experimental: true
+            experimental: false
             runtime_tests: true
           - os: windows-latest
             python: "3.8"
-            experimental: true
+            experimental: false
             runtime_tests: true
           - os: ubuntu-latest
             python: "3.9"
-            experimental: true
+            experimental: false
             runtime_tests: true
           - os: macos-15-intel
             python: "3.9"
-            experimental: true
+            experimental: false
             runtime_tests: true
           - os: windows-latest
             python: "3.9"
-            experimental: true
+            experimental: false
             runtime_tests: true
 
     steps:
@@ -140,11 +137,11 @@ jobs:
           # architecture. Keep distro/image boundaries explicit because native
           # dependency artifacts are not portable between them.
           shared-key: >-
-            ${{ matrix.os == 'ubuntu-latest' && 'rust-test-linux-ubuntu-latest-x64' ||
+            ${{ matrix.os == 'ubuntu-latest' && 'kernel-Linux-X64-runtime' ||
                 matrix.os == 'ubuntu-22.04' && 'rust-test-linux-ubuntu-22.04-x64' ||
-                matrix.os == 'macos-latest' && 'rust-test-macos-latest-arm64' ||
+                matrix.os == 'macos-latest' && 'kernel-macOS-ARM64-runtime' ||
                 matrix.os == 'macos-15-intel' && 'rust-test-macos-15-intel-x64' ||
-                matrix.os == 'windows-latest' && 'rust-test-windows-latest-x64' }}
+                matrix.os == 'windows-latest' && 'kernel-Windows-X64-runtime' }}
 
           # The fixed-platform test jobs are the writers for the common
           # macOS/Windows caches. Ubuntu 22.04 has no fixed-platform job, so
@@ -157,13 +154,13 @@ jobs:
 
       - name: Run libpy tests (symbol resolution + ABI validation)
         continue-on-error: ${{ matrix.experimental }}
-        run: cargo test -p libpy -- --nocapture --test-threads=1
+        run: cargo test --locked -p libpy -- --nocapture --test-threads=1
 
       - name: Run libpy-check (compile-time signature validation)
         if: ${{ !matrix.experimental }}
         run: |
-          cargo build -p libpy-check
-          cargo run -p libpy-check
+          cargo build --locked -p libpy-check
+          cargo run --locked -p libpy-check
 
       # Reuse this already-provisioned runner for every pybridge ABI row that
       # previously used the same OS/architecture/Python combination. The
@@ -173,40 +170,40 @@ jobs:
         env:
           APK_VERIFY_PYCONFIG_ABI: "1"
         run: >-
-          cargo test -p pybridge --lib
+          cargo test --locked -p pybridge --lib
           pyconfig_abi::tests::selected_cpython_headers_match_table
           -- --exact --nocapture
 
       - name: Run pybridge tests
         if: ${{ matrix.python != '3.7' && (runner.os != 'macOS' || matrix.python == '3.8' || matrix.python == '3.13' || matrix.python == '3.14' || matrix.python == '3.15') }}
-        run: cargo test -p pybridge -- --nocapture --test-threads=1
+        run: cargo test --locked -p pybridge -- --nocapture --test-threads=1
 
       - name: Initialize the selected Python through pybridge
         if: ${{ matrix.runtime_tests && runner.os == 'macOS' && matrix.python != '3.8' && matrix.python != '3.13' && matrix.python != '3.14' && matrix.python != '3.15' }}
         continue-on-error: ${{ matrix.experimental }}
-        run: cargo test -p pybridge --test integration test_initialized_ -- --nocapture --test-threads=1
+        run: cargo test --locked -p pybridge --test integration test_initialized_ -- --nocapture --test-threads=1
 
       - name: Create a figure through the embedded Matplotlib backend
         if: ${{ matrix.runtime_tests }}
         continue-on-error: ${{ matrix.experimental }}
-        run: cargo test -p apk --test integration test_matplotlib_backend_load -- --exact --nocapture --test-threads=1
+        run: cargo test --locked -p apk --test integration test_matplotlib_backend_load -- --exact --nocapture --test-threads=1
 
       - name: Exercise the console plot comm pipeline
         if: ${{ matrix.runtime_tests }}
         continue-on-error: ${{ matrix.experimental }}
-        run: cargo test -p apk --test kernel_suite kernel_plots::test_plot_metadata_execution_id_matches_execute_request_msg_id -- --exact --nocapture --test-threads=1
+        run: cargo test --locked -p apk --test kernel_suite kernel_plots::test_plot_metadata_execution_id_matches_execute_request_msg_id -- --exact --nocapture --test-threads=1
 
       - name: Render a notebook plot as PNG display data
         if: ${{ matrix.runtime_tests }}
         continue-on-error: ${{ matrix.experimental }}
         env:
           APK_TEST_SESSION_MODE: notebook
-        run: cargo test -p apk --test kernel_notebook_suite kernel_plots_notebook::test_notebook_mode_sends_display_data_for_matplotlib -- --exact --nocapture --test-threads=1
+        run: cargo test --locked -p apk --test kernel_notebook_suite kernel_plots_notebook::test_notebook_mode_sends_display_data_for_matplotlib -- --exact --nocapture --test-threads=1
 
   # Release builds above are blocking. Keep unusual Windows layouts as
   # best-effort diagnostics because they cannot install the normal plot suite.
   libpy_windows:
-    name: "libpy: Windows variant diagnostics"
+    name: libpy diagnostics | Windows | unsupported distributions
     uses: ./.github/workflows/test-libpy-windows.yml
     secrets: inherit
     with:

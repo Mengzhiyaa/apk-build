@@ -1,4 +1,5 @@
-name: "Build APK Release"
+name: Build APK Release
+# Preserve the original release entry points and platform build/publication jobs.
 on:
   repository_dispatch:
     types: [run-release]
@@ -6,22 +7,37 @@ on:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA to build"
+        description: Full source SHA to test and release
         type: string
-      release_channel:
-        required: false
-        description: "Release channel: stable, alpha, beta, rc"
-        default: "alpha"
+      backend:
+        description: Backend to release
         type: choice
-        options:
-          - alpha
-          - beta
-          - rc
-          - stable
+        default: ty
+        options: [runtime, ty, pyrefly]
+      release_channel:
+        description: Release channel
+        type: choice
+        default: alpha
+        options: [alpha, beta, rc, stable]
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      backend:
+        type: string
+        default: ty
+      release_channel:
+        type: string
+        default: alpha
+      tests_verified:
+        description: Internal caller has passed the same-SHA complete test gate
+        type: boolean
+        default: false
 
 # Only one release at a time
 concurrency:
-  group: release
+  group: release-${{ github.event.client_payload.release_backend || github.event.client_payload.backend || inputs.backend || 'ty' }}-${{ github.event.client_payload.release_channel || inputs.release_channel || 'alpha' }}
   cancel-in-progress: false
 
 # Required for creating releases and tags
@@ -36,17 +52,42 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       channel: ${{ steps.resolve.outputs.channel }}
+      backend: ${{ steps.resolve.outputs.release_backend }}
     steps:
-      - name: Resolve dispatch payload
+      - uses: actions/checkout@v7
+      - name: Validate release request
         id: resolve
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
-            echo "channel=${{ github.event.client_payload.release_channel || 'alpha' }}" >> $GITHUB_OUTPUT
-          else
-            echo "sha=${{ inputs.source_sha }}" >> $GITHUB_OUTPUT
-            echo "channel=${{ inputs.release_channel || 'alpha' }}" >> $GITHUB_OUTPUT
-          fi
+        env:
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: python .github/scripts/resolve.py --publish
+
+  verify:
+    name: Test source before release
+    needs: resolve
+    if: inputs.tests_verified != true
+    uses: ./.github/workflows/test-suite.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      backend: all
+
+  gate:
+    name: Require successful tests
+    if: always() && !cancelled()
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          TEST_RESULT: ${{ needs.verify.result }}
+          TESTS_VERIFIED: ${{ inputs.tests_verified }}
+        with:
+          script: |
+            if (process.env.RESOLVE_RESULT !== 'success' ||
+                (process.env.TESTS_VERIFIED !== 'true' && process.env.TEST_RESULT !== 'success')) {
+              core.setFailed('The source must pass all required tests before a release build');
+            }
 
   # Extract the current version of APK from its Cargo.toml file.
   get_version:
@@ -67,9 +108,11 @@ jobs:
 
       - name: Determine Version
         id: extract_version
+        env:
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
+          BACKEND: ${{ needs.resolve.outputs.backend }}
         run: |
-          VERSION=$(cat crates/apk/Cargo.toml | grep '^version' | sed -e "s/[^.0-9]//g")
-          CHANNEL="${{ needs.resolve.outputs.channel }}"
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("crates/apk/Cargo.toml", "rb"))["package"]["version"])')
 
           if [ "$CHANNEL" = "stable" ]; then
             TAG="${VERSION}"
@@ -79,10 +122,17 @@ jobs:
             PRERELEASE="true"
           fi
 
+          # Keep the canonical ty filenames; other backends use distinct tags/assets.
+          if [ "$BACKEND" != "ty" ]; then
+            TAG="${TAG}-${BACKEND}"
+          fi
+
           echo "APK version: ${VERSION}, tag: ${TAG}, channel: ${CHANNEL}, prerelease: ${PRERELEASE}"
-          echo "result=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "prerelease=${PRERELEASE}" >> $GITHUB_OUTPUT
+          {
+            echo "result=${VERSION}"
+            echo "tag=${TAG}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
 
   # Report pending status
   report_pending:
@@ -101,7 +151,7 @@ jobs:
               sha: '${{ needs.resolve.outputs.sha }}',
               state: 'pending',
               target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / release',
+              context: 'apk-build / release (${{ needs.resolve.outputs.backend }})',
               description: 'Release build in progress...'
             });
 
@@ -109,35 +159,38 @@ jobs:
   build_linux:
     name: Build Linux
     uses: ./.github/workflows/release-linux.yml
-    needs: [get_version, resolve, report_pending]
+    needs: [get_version, resolve, report_pending, gate]
     secrets: inherit
     with:
       version: ${{ needs.get_version.outputs.RELEASE_TAG }}
       source_sha: ${{ needs.resolve.outputs.sha }}
+      backend: ${{ needs.resolve.outputs.backend }}
 
   build_macos:
     name: Build macOS
     uses: ./.github/workflows/release-macos.yml
-    needs: [get_version, resolve, report_pending]
+    needs: [get_version, resolve, report_pending, gate]
     secrets: inherit
     with:
       version: ${{ needs.get_version.outputs.RELEASE_TAG }}
       source_sha: ${{ needs.resolve.outputs.sha }}
+      backend: ${{ needs.resolve.outputs.backend }}
 
   build_windows:
     name: Build Windows
     uses: ./.github/workflows/release-windows.yml
-    needs: [get_version, resolve, report_pending]
+    needs: [get_version, resolve, report_pending, gate]
     secrets: inherit
     with:
       version: ${{ needs.get_version.outputs.RELEASE_TAG }}
       source_sha: ${{ needs.resolve.outputs.sha }}
+      backend: ${{ needs.resolve.outputs.backend }}
 
   # Create a GitHub Release and upload all binaries
   create_release:
     name: Create Release & Upload Binaries
     runs-on: ubuntu-latest
-    needs: [get_version, build_linux, build_macos, build_windows]
+    needs: [resolve, get_version, build_linux, build_macos, build_windows]
     steps:
       # Download all platform binaries
       - name: Download Linux x64
@@ -183,6 +236,7 @@ jobs:
           name: APK ${{ needs.get_version.outputs.RELEASE_TAG }}
           draft: false
           prerelease: ${{ needs.get_version.outputs.IS_PRERELEASE == 'true' }}
+          body: "Backend: ${{ needs.resolve.outputs.backend }}; source: ${{ needs.resolve.outputs.sha }}. All required tests passed before this build."
           generate_release_notes: true
           make_latest: ${{ needs.get_version.outputs.IS_PRERELEASE != 'true' }}
           files: |
@@ -205,12 +259,12 @@ jobs:
         id: result
         run: |
           if [ "${{ needs.create_release.result }}" = "success" ]; then
-            echo "state=success" >> $GITHUB_OUTPUT
-            echo "description=Release published successfully" >> $GITHUB_OUTPUT
+            echo "state=success"
+            echo "description=Release published successfully"
           else
-            echo "state=failure" >> $GITHUB_OUTPUT
-            echo "description=Release failed" >> $GITHUB_OUTPUT
-          fi
+            echo "state=failure"
+            echo "description=Release failed"
+          fi >> "$GITHUB_OUTPUT"
 
       - name: Report commit status to apks
         uses: actions/github-script@v9
@@ -223,27 +277,7 @@ jobs:
               sha: '${{ needs.resolve.outputs.sha }}',
               state: '${{ steps.result.outputs.state }}',
               target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / release',
+              context: 'apk-build / release (${{ needs.resolve.outputs.backend }})',
               description: '${{ steps.result.outputs.description }}'
             });
 
-  # Clean up failed releases
-  cleanup:
-    name: Clean up Failed Releases
-    if: ${{ failure() }}
-    runs-on: ubuntu-latest
-    needs: [create_release, get_version]
-    steps:
-      - name: Check for existing release tag
-        uses: mukunku/tag-exists-action@v1.6.0
-        id: check_tag
-        with:
-          tag: ${{ needs.get_version.outputs.RELEASE_TAG }}
-
-      - name: Delete failed release if any
-        if: steps.check_tag.outputs.exists == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG=${{ needs.get_version.outputs.RELEASE_TAG }}
-          gh release delete $TAG -y --cleanup-tag

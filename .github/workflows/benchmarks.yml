@@ -3,6 +3,10 @@ name: "Benchmark APK"
 on:
   workflow_call:
     inputs:
+      backend:
+        description: Analysis backend (one backend per benchmark run)
+        type: string
+        default: ty
       source_sha:
         required: true
         description: "The APK commit SHA to benchmark"
@@ -21,6 +25,11 @@ on:
     types: [run-benchmarks]
   workflow_dispatch:
     inputs:
+      backend:
+        description: Analysis backend
+        type: choice
+        default: ty
+        options: [runtime, ty, pyrefly]
       source_sha:
         required: true
         description: "The APK commit SHA to benchmark"
@@ -32,7 +41,7 @@ on:
         type: string
 
 concurrency:
-  group: benchmark-${{ github.event.client_payload.sha || inputs.source_sha }}-${{ inputs.benchmark_mode || 'performance' }}
+  group: benchmark-${{ github.event.client_payload.sha || inputs.source_sha }}-${{ inputs.benchmark_mode || 'performance' }}-${{ github.event.client_payload.backend || inputs.backend || 'ty' }}
   cancel-in-progress: true
 
 jobs:
@@ -43,46 +52,43 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       ref: ${{ steps.resolve.outputs.ref }}
       mode: ${{ steps.resolve.outputs.mode }}
+      backend: ${{ steps.resolve.outputs.backend }}
     steps:
-      - name: Resolve dispatch payload
+      - uses: actions/checkout@v7
+      - name: Resolve benchmark request
         id: resolve
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "sha=${{ github.event.client_payload.sha }}" >> "$GITHUB_OUTPUT"
-            echo "ref=${{ github.event.client_payload.ref || 'main' }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "sha=${{ inputs.source_sha }}" >> "$GITHUB_OUTPUT"
-            echo "ref=${{ inputs.source_ref }}" >> "$GITHUB_OUTPUT"
-          fi
-          mode="${{ inputs.benchmark_mode }}"
-          if [ -z "$mode" ]; then
-            mode="performance"
-          fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+        env:
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: python .github/scripts/resolve.py --benchmark
 
       - name: Set pending commit status
         if: steps.resolve.outputs.mode == 'performance'
         uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ steps.resolve.outputs.sha }}
+          BACKEND: ${{ steps.resolve.outputs.backend }}
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
             await github.rest.repos.createCommitStatus({
               owner: 'Mengzhiyaa',
               repo: 'apk',
-              sha: '${{ steps.resolve.outputs.sha }}',
+              sha: process.env.SOURCE_SHA,
               state: 'pending',
               target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / benchmarks',
+              context: `apk-build / benchmarks (${process.env.BACKEND})`,
               description: 'Phase A benchmarks are running...'
             });
 
   phase-a:
-    name: Phase A feature-overhead benchmarks
+    name: "Benchmark ${{ needs.resolve.outputs.mode }} | ${{ needs.resolve.outputs.backend }} | Linux x64 console"
     needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
+      APK_BACKEND: ${{ needs.resolve.outputs.backend }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      SOURCE_REF: ${{ needs.resolve.outputs.ref }}
       RUST_BACKTRACE: "1"
       # Keep release optimizations while avoiding production fat-LTO link time.
       CARGO_PROFILE_RELEASE_LTO: "off"
@@ -94,21 +100,9 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.APK_SOURCE_PAT }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzmq3-dev
-
-      - name: Set up Python
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: ./.github/actions/setup-test
         with:
-          version: "0.11.29"
-          python-version: "3.13"
-          activate-environment: true
-          enable-cache: true
-          cache-suffix: apk-phase-a-py313
-          cache-dependency-glob: Cargo.lock
-          ignore-nothing-to-cache: true
+          python-dependencies: 'false'
 
       - name: Install performance benchmark Python dependencies
         if: needs.resolve.outputs.mode == 'performance'
@@ -116,27 +110,19 @@ jobs:
           uv pip install "scanpy>=1.12" "ipywidgets>=8.1" "matplotlib>=3.8" "numpy>=1.26" "pandas>=2.1"
           python -c "import ipywidgets, matplotlib, numpy, pandas, scanpy; print('Benchmark dependencies ready')"
 
-      - name: Select benchmark Python
-        run: echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: benchmark-phase-a-linux-py313
+          shared-key: benchmark-phase-a-linux-py313-${{ needs.resolve.outputs.backend }}
 
       - name: Lint benchmark crate
         if: needs.resolve.outputs.mode == 'performance'
-        run: cargo clippy --locked -p apk_benchmark --all-targets --features lsp -- -D warnings
+        run: just benchmark-clippy
 
       - name: Run core feature-overhead suite
         if: needs.resolve.outputs.mode == 'performance'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- run \
+          just benchmark-run run \
             --suite core \
             --pure-python-baseline all \
             --repetitions 5 \
@@ -147,14 +133,14 @@ jobs:
       - name: Render core report
         if: needs.resolve.outputs.mode == 'performance'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- report \
+          just benchmark-run report \
             target/bench/core.json \
             --html target/bench/core.html
 
       - name: Run Scanpy comprehensive suite
         if: needs.resolve.outputs.mode == 'performance'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- run \
+          just benchmark-run run \
             --suite scanpy \
             --pure-python-baseline all \
             --repetitions 5 \
@@ -165,7 +151,7 @@ jobs:
       - name: Render Scanpy report
         if: needs.resolve.outputs.mode == 'performance'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- report \
+          just benchmark-run report \
             target/bench/scanpy.json \
             --html target/bench/scanpy.html
 
@@ -187,7 +173,7 @@ jobs:
       - name: Run benchmark smoke check
         if: needs.resolve.outputs.mode == 'smoke'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- run \
+          just benchmark-run run \
             --suite pr-quick \
             --pure-python-baseline noop \
             --repetitions 1 \
@@ -198,7 +184,7 @@ jobs:
       - name: Render smoke report
         if: needs.resolve.outputs.mode == 'smoke'
         run: |
-          cargo run --locked --release -p apk_benchmark --features lsp -- report \
+          just benchmark-run report \
             target/bench/smoke.json \
             --html target/bench/smoke.html
 
@@ -209,8 +195,8 @@ jobs:
           {
             echo "## APK Phase A benchmarks"
             echo
-            echo "- Source: \`${{ needs.resolve.outputs.sha }}\`"
-            echo "- Ref: \`${{ needs.resolve.outputs.ref }}\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Ref: \`$SOURCE_REF\`"
             echo "- Python: \`${APK_PYTHON_PATH:-unavailable}\`"
             echo "- Cargo profile: \`release\` with LTO disabled"
             echo "- Pure Python baseline: all selected workloads"
@@ -227,8 +213,8 @@ jobs:
           {
             echo "## APK benchmark smoke check"
             echo
-            echo "- Source: \`${{ needs.resolve.outputs.sha }}\`"
-            echo "- Ref: \`${{ needs.resolve.outputs.ref }}\`"
+            echo "- Source: \`$SOURCE_SHA\`"
+            echo "- Ref: \`$SOURCE_REF\`"
             echo "- Suite: \`pr-quick\`"
             echo "- Repetitions: \`1\`"
             echo "- Iterations: \`3\`"
@@ -243,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: phase-a-benchmarks-${{ needs.resolve.outputs.sha }}
+          name: phase-a-benchmarks-${{ needs.resolve.outputs.backend }}-${{ needs.resolve.outputs.sha }}
           path: |
             target/bench/*.json
             target/bench/*.html
@@ -251,11 +237,12 @@ jobs:
           retention-days: 30
 
   session-smoke:
-    name: ${{ matrix.os }} / ${{ matrix.session }} smoke
+    name: "Benchmark smoke | ${{ needs.resolve.outputs.backend }} | ${{ matrix.os }} | ${{ matrix.session }}"
     needs: resolve
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
+      APK_BACKEND: ${{ needs.resolve.outputs.backend }}
       CARGO_PROFILE_RELEASE_LTO: "off"
     strategy:
       fail-fast: false
@@ -275,65 +262,26 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           token: ${{ secrets.APK_SOURCE_PAT }}
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzmq3-dev
-
-      - name: Install macOS system dependencies
-        if: runner.os == 'macOS'
-        run: brew install zeromq
-
-      - name: Install Windows system dependencies
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          vcpkg install zeromq:x64-windows
-          "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Set up Python
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: ./.github/actions/setup-test
         with:
-          version: "0.11.29"
-          python-version: "3.13"
-          activate-environment: true
-          enable-cache: true
-          cache-suffix: apk-benchmark-${{ runner.os }}-py313
-          cache-dependency-glob: Cargo.lock
-          ignore-nothing-to-cache: true
-
-      - name: Select Python on Unix
-        if: runner.os != 'Windows'
-        shell: bash
-        run: echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
-
-      - name: Select Python on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $python = python -c "import sys; print(sys.executable)"
-          "APK_PYTHON_PATH=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+          python-dependencies: 'false'
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: benchmark-session-${{ runner.os }}-py313
+          shared-key: benchmark-session-${{ runner.os }}-py313-${{ needs.resolve.outputs.backend }}
 
       - name: Run session smoke benchmark
-        run: cargo run --locked --release -p apk_benchmark --features lsp -- run --suite session-smoke --session-mode ${{ matrix.session }} --pure-python-baseline none --repetitions 1 --iterations 3 --warmup 1 --output target/bench/${{ matrix.session }}.json
+        run: just benchmark-run run --suite session-smoke --session-mode ${{ matrix.session }} --pure-python-baseline none --repetitions 1 --iterations 3 --warmup 1 --output target/bench/${{ matrix.session }}.json
 
       - name: Render session smoke report
-        run: cargo run --locked --release -p apk_benchmark --features lsp -- report target/bench/${{ matrix.session }}.json --html target/bench/${{ matrix.session }}.html
+        run: just benchmark-run report target/bench/${{ matrix.session }}.json --html target/bench/${{ matrix.session }}.html
 
       - name: Upload session smoke report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: session-smoke-${{ runner.os }}-${{ matrix.session }}-${{ needs.resolve.outputs.sha }}
+          name: session-smoke-${{ needs.resolve.outputs.backend }}-${{ runner.os }}-${{ matrix.session }}-${{ needs.resolve.outputs.sha }}
           path: |
             target/bench/*.json
             target/bench/*.html
@@ -361,15 +309,18 @@ jobs:
       - name: Set final commit status
         if: needs.resolve.outputs.mode == 'performance'
         uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+          BACKEND: ${{ needs.resolve.outputs.backend }}
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
             await github.rest.repos.createCommitStatus({
               owner: 'Mengzhiyaa',
               repo: 'apk',
-              sha: '${{ needs.resolve.outputs.sha }}',
+              sha: process.env.SOURCE_SHA,
               state: '${{ steps.result.outputs.state }}',
               target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / benchmarks',
+              context: `apk-build / benchmarks (${process.env.BACKEND})`,
               description: '${{ steps.result.outputs.description }}'
             });

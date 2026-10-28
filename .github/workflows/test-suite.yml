@@ -1,0 +1,182 @@
+name: Required APK checks
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      source_ref:
+        type: string
+        default: main
+      backend:
+        type: string
+        default: all
+permissions:
+  contents: read
+jobs:
+  quality:
+    name: Quality checks | Linux x64 | Rust format + workflows + dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v7
+        with:
+          path: infrastructure
+      - name: Checkout APK source
+        uses: actions/checkout@v7
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+          path: source
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install just 1.40.0
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.40.0
+      - name: Install actionlint 1.7.12 from official release
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+        run: |
+          actionlint_dir="$RUNNER_TEMP/actionlint-$ACTIONLINT_VERSION"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          checksums="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          release_url="https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION"
+          mkdir -p "$actionlint_dir"
+          curl --fail --location --retry 3 "$release_url/$archive" -o "$actionlint_dir/$archive"
+          curl --fail --location --retry 3 "$release_url/$checksums" -o "$actionlint_dir/$checksums"
+          (
+            cd "$actionlint_dir"
+            sha256sum --check --ignore-missing "$checksums"
+          )
+          tar -xzf "$actionlint_dir/$archive" -C "$actionlint_dir" actionlint
+          echo "$actionlint_dir" >> "$GITHUB_PATH"
+      - name: Check Rust formatting
+        working-directory: source
+        run: just fmt-check
+      - name: Check infrastructure workflows
+        working-directory: infrastructure
+        run: actionlint
+      - name: Check source workflows
+        working-directory: source
+        run: actionlint
+      - name: Check dispatch validation
+        working-directory: infrastructure
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+
+  runtime:
+    name: Kernel acceptance | runtime backend
+    if: inputs.backend == 'all' || inputs.backend == 'runtime'
+    uses: ./.github/workflows/test-kernel.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: runtime
+  ty:
+    name: Kernel acceptance | ty backend
+    if: inputs.backend == 'all' || inputs.backend == 'ty'
+    uses: ./.github/workflows/test-kernel.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: ty
+  pyrefly:
+    name: Kernel acceptance | Pyrefly backend
+    if: inputs.backend == 'all' || inputs.backend == 'pyrefly'
+    uses: ./.github/workflows/test-kernel.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: pyrefly
+
+  python:
+    name: Python helpers | Linux x64 | CPython 3.13 | pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: Mengzhiyaa/apk
+          ref: ${{ inputs.source_sha }}
+          token: ${{ secrets.APK_SOURCE_PAT }}
+      - uses: ./.github/actions/setup-test
+        with:
+          kernel-dependencies: 'false'
+          python-helper-dependencies: 'true'
+          save-python-cache: 'false'
+      - run: just python-helpers-ci
+      - name: Upload Python helper results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-helpers-${{ inputs.source_sha }}
+          path: target/test-reports/python-helpers.xml
+          if-no-files-found: warn
+
+  abi:
+    name: CPython compatibility | libpy symbols + signatures + runtime
+    uses: ./.github/workflows/test-libpy.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+  pybridge:
+    name: CPython compatibility | pybridge ABI + initialization
+    uses: ./.github/workflows/test-pybridge.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+  debugger:
+    name: Debugger acceptance | runtime backend
+    uses: ./.github/workflows/test-debug.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+  benchmark:
+    name: Benchmark smoke | runtime backend
+    uses: ./.github/workflows/benchmarks.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      source_ref: ${{ inputs.source_ref }}
+      backend: runtime
+      benchmark_mode: smoke
+
+  report:
+    name: Required checks | aggregate backend + ABI + debugger results
+    if: always()
+    needs: [quality, runtime, ty, pyrefly, python, abi, pybridge, debugger, benchmark]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RESULTS_JSON: ${{ toJSON(needs) }}
+          BACKEND: ${{ inputs.backend }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        with:
+          github-token: ${{ secrets.APK_SOURCE_PAT }}
+          script: |
+            const results = JSON.parse(process.env.RESULTS_JSON);
+            const backends = ['runtime', 'ty', 'pyrefly'];
+            const valid = ['all', ...backends].includes(process.env.BACKEND);
+            const failed = [];
+            const rows = [];
+            for (const [name, job] of Object.entries(results)) {
+              const required = !backends.includes(name) || process.env.BACKEND === 'all' || process.env.BACKEND === name;
+              if (!required) continue;
+              if (job.result !== 'success') failed.push(name);
+              rows.push([name, job.result]);
+              const suffix = process.env.BACKEND === 'all' ? '' : ` (${process.env.BACKEND})`;
+              await github.rest.repos.createCommitStatus({
+                owner: 'Mengzhiyaa', repo: 'apk', sha: process.env.SOURCE_SHA,
+                context: `apk-build / ${name}${suffix}`,
+                state: job.result === 'success' ? 'success' : 'failure',
+                target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                description: `${name}: ${job.result}`
+              });
+            }
+            await core.summary.addHeading('Required APK checks').addTable([
+              [{data: 'Check', header: true}, {data: 'Result', header: true}], ...rows
+            ]).write();
+            if (!valid || failed.length) core.setFailed(`Required checks failed: ${failed.join(', ') || 'invalid backend'}`);

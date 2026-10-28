@@ -1,0 +1,34 @@
+name: Kernel backend acceptance
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      backend:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  test_linux:
+    name: "Kernel ${{ inputs.backend }} | Linux x64 | CPython 3.13"
+    uses: ./.github/workflows/test-linux.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: ${{ inputs.backend }}
+  test_macos:
+    name: "Kernel ${{ inputs.backend }} | macOS arm64 | CPython 3.13"
+    uses: ./.github/workflows/test-macos.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: ${{ inputs.backend }}
+  test_windows:
+    name: "Kernel ${{ inputs.backend }} | Windows x64 | CPython 3.13"
+    uses: ./.github/workflows/test-windows.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: ${{ inputs.backend }}

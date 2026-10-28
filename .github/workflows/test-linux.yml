@@ -1,89 +1,39 @@
 name: "Test APK - Linux"
-
 on:
   workflow_call:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA from the apks repository"
         type: string
-
+      backend:
+        type: string
+        default: runtime
+permissions:
+  contents: read
 jobs:
   linux:
-    name: "Rust: ${{ matrix.rust }}"
+    name: "Kernel ${{ inputs.backend }} | Linux x64 | CPython 3.13 | Clippy + tests"
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable]
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APK_BACKEND: ${{ inputs.backend }}
+      RUST_BACKTRACE: '1'
     steps:
-      - name: Checkout apks source
+      - name: Checkout APK source
         uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
           token: ${{ secrets.APK_SOURCE_PAT }}
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzmq3-dev
-
-      - name: Set up uv Python environment
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: ./.github/actions/setup-test
         with:
-          version: "0.11.29"
-          python-version: "3.13"
-          activate-environment: true
-          enable-cache: true
-          cache-suffix: apk-tests-py313
-          cache-dependency-glob: Cargo.lock
-          ignore-nothing-to-cache: true
-
-      - name: Install Python test dependencies
-        run: |
-          uv pip install "numpy>=1.26" "pandas>=2.1" "matplotlib>=3.8" "ipywidgets>=8.1" "debugpy>=1.8"
-          echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
-          python -c "import debugpy, ipywidgets, matplotlib, numpy, pandas; print('Python test dependencies ready')"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: rustfmt, clippy
-
-      - name: Rust Cache
+          # Runtime owns the shared Python cache; other backends restore it.
+          save-python-cache: ${{ inputs.backend == 'runtime' }}
+      - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # This full-workspace job is the writer for the shared
-          # ubuntu-latest/x64 dependency cache used by the libpy matrix.
-          shared-key: rust-test-linux-ubuntu-latest-x64
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --features lsp -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace --features lsp
-
-      - name: Run Tests
-        run: cargo test --workspace --features lsp
-
-      - name: Run Notebook Completion Test (LSP)
-        run: APK_TEST_SESSION_MODE=notebook cargo test -p apk --features lsp --test kernel_notebook_suite test_notebook_completion_os_path
-
-      - name: Run APK Optional-Dependency Coverage
-        run: |
-          cargo test -p apk --features lsp --test kernel_suite 'kernel_widget::'
-          cargo test -p apk --features lsp --test kernel_suite 'kernel_plots::'
-          cargo test -p apk --features lsp --test kernel_background_suite 'kernel_plots_background::'
-          cargo test -p apk --features lsp --test kernel_notebook_suite 'kernel_plots_notebook::'
-          cargo test -p apk --features lsp --test kernel_notebook_suite 'kernel_mpl_split_cells::'
-          cargo test -p apk --features lsp --test integration test_dataframe_resolve
-          cargo test -p apk --features lsp --test integration test_matplotlib_backend_load
-          cargo test -p apk --features lsp --test integration test_matplotlib_after_display_override
+          shared-key: kernel-${{ runner.os }}-${{ runner.arch }}-${{ inputs.backend }}
+      - name: Clippy workspace and all targets (${{ inputs.backend }})
+        run: just clippy
+      - name: Workspace and kernel acceptance tests (${{ inputs.backend }})
+        run: just test

@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   pybridge_matrix:
-    name: "pybridge: Python ${{ matrix.python }} (${{ matrix.os }}, ${{ matrix.arch }})"
+    name: "pybridge ABI + initialization | ${{ matrix.os }} ${{ matrix.arch }} | CPython ${{ matrix.python }}"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
@@ -111,9 +111,9 @@ jobs:
           # Python.h. This is CI-only and is not part of APK's normal build.
           APK_VERIFY_PYCONFIG_ABI: "1"
         run: >-
-          cargo test -p pybridge --lib
+          cargo test --locked -p pybridge --lib
           pyconfig_abi::tests::selected_cpython_headers_match_table
           -- --exact --nocapture
 
       - name: Run pybridge tests
-        run: cargo test -p pybridge -- --nocapture --test-threads=1
+        run: cargo test --locked -p pybridge -- --nocapture --test-threads=1

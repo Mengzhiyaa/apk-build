@@ -19,7 +19,7 @@ jobs:
   # assertions. This job is intentionally allow-failure so it can
   # collect diagnostics even when the symptom is "libpy panic".
   libpy_windows_matrix:
-    name: "libpy: Python ${{ matrix.label }}"
+    name: "libpy diagnostics | Windows x64 | CPython ${{ matrix.label }}"
     runs-on: windows-latest
     timeout-minutes: 25
     # Diagnostic only — never fail the wave on missing symbols.
@@ -206,7 +206,7 @@ jobs:
         with:
           # Reuse the canonical Windows x64 cache. Python layout variants do
           # not need independent Rust dependency caches.
-          shared-key: rust-test-windows-latest-x64
+          shared-key: kernel-Windows-X64-runtime
           save-if: false
 
       - name: Run libpy integration tests (capture, allow failure)

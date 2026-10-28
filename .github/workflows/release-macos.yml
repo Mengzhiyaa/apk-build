@@ -9,7 +9,11 @@ on:
         type: string
       source_sha:
         required: true
-        description: "The commit SHA from the apks repository"
+        description: "The commit SHA from the apk repository"
+        type: string
+      backend:
+        required: true
+        description: Validated backend selected by the test gate
         type: string
 
 env:
@@ -23,6 +27,7 @@ jobs:
     timeout-minutes: 40
 
     env:
+      APK_BACKEND: ${{ inputs.backend }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     strategy:
@@ -45,14 +50,17 @@ jobs:
           token: ${{ secrets.APK_SOURCE_PAT }}
 
       - name: Install Rust toolchain
-        run: |
-          rustup update --no-self-update stable
-          rustup default stable
+        uses: dtolnay/rust-toolchain@stable
 
       # The pinned zmq-sys builds and statically links bundled ZeroMQ.
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.40.0
+
       - name: Compile APK (${{ matrix.arch }})
         run: |
-          cargo build --release --target ${{ matrix.rust_target_prefix }}-apple-darwin --features lsp -p apk
+          just release-target ${{ matrix.rust_target_prefix }}-apple-darwin
 
       - name: Create archive
         run: |
@@ -60,7 +68,7 @@ jobs:
 
           ARCHIVE="$GITHUB_WORKSPACE/apk-${{ inputs.version }}-darwin-${{ matrix.arch }}.zip"
           [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE 2>/dev/null || true
-          zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
+          zip -Xry "$ARCHIVE" apk LICENSE 2>/dev/null || zip -Xry "$ARCHIVE" apk
 
           popd
 
@@ -117,7 +125,7 @@ jobs:
           # Compress and bundle license
           ARCHIVE="$GITHUB_WORKSPACE/apk-${{ inputs.version }}-darwin-universal.zip"
           [ -e LICENSE ] || cp "$GITHUB_WORKSPACE/LICENSE" LICENSE 2>/dev/null || true
-          zip -Xry $ARCHIVE apk LICENSE 2>/dev/null || zip -Xry $ARCHIVE apk
+          zip -Xry "$ARCHIVE" apk LICENSE 2>/dev/null || zip -Xry "$ARCHIVE" apk
 
       - name: Upload universal archive
         uses: actions/upload-artifact@v7

@@ -1,66 +1,47 @@
-name: "Test APK - Debugger Acceptance"
-
+name: Debugger acceptance
 on:
   workflow_call:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA from the apk repository"
         type: string
-
+permissions:
+  contents: read
 jobs:
-  debug_python_matrix:
-    name: "Debugger: Python ${{ matrix.python }}"
-    runs-on: ubuntu-latest
+  debugger:
+    name: "Debugger runtime | ${{ matrix.os }} | CPython ${{ matrix.python }} | DAP + shutdown"
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        os: [ubuntu-latest]
+        python: ['3.8', '3.9', '3.10', '3.11', '3.12', '3.13', '3.14', '3.15']
+        include:
+          - os: macos-latest
+            python: '3.13'
+          - os: windows-latest
+            python: '3.13'
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RUST_BACKTRACE: "1"
+      APK_BACKEND: runtime
+      RUST_BACKTRACE: '1'
     steps:
-      - name: Checkout apk source
-        uses: actions/checkout@v7
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@v7
         with:
           repository: Mengzhiyaa/apk
           ref: ${{ inputs.source_sha }}
           token: ${{ secrets.APK_SOURCE_PAT }}
-
-      - name: Install ZeroMQ
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzmq3-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v7
+      - uses: ./.github/actions/setup-test
         with:
           python-version: ${{ matrix.python }}
-
-      - name: Select matrix interpreter
-        run: echo "APK_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
+          python-dependencies: 'false'
+      - uses: Swatinem/rust-cache@v2
         with:
-          # Reuse the canonical x64 Ubuntu cache written by test-linux.
-          shared-key: rust-test-linux-ubuntu-latest-x64
+          shared-key: kernel-${{ runner.os }}-${{ runner.arch }}-runtime
           save-if: false
-
-      - name: Run debugger unit tests
-        run: cargo test -p apk --features lsp,debug-metrics --lib
-
-      - name: Run debugger protocol and lifecycle regressions
-        run: >-
-          cargo test -p apk --features lsp,debug-metrics --test kernel_suite
-          kernel_debug:: -- --skip kernel_debug::regression::test_zero_overhead_callback_gates
-
-      - name: Run native debugger shutdown acceptance
-        run: cargo test -p apk --features lsp,debug-metrics --test kernel_suite kernel_shutdown::test_native
-
-      - name: Run zero-overhead callback-count gates
-        run: cargo test -p apk --features lsp,debug-metrics --test kernel_suite kernel_debug::regression::test_zero_overhead_callback_gates -- --exact
+      - name: Run debugger unit, protocol, callback and native shutdown checks
+        run: just ci-debug

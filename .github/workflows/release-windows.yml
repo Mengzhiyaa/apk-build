@@ -10,7 +10,12 @@ on:
         type: string
       source_sha:
         required: true
-        description: "The commit SHA from the apks repository"
+        description: "The commit SHA from the apk repository"
+        type: string
+
+      backend:
+        required: true
+        description: Validated backend selected by the test gate
         type: string
 
 jobs:
@@ -20,6 +25,7 @@ jobs:
     timeout-minutes: 40
 
     env:
+      APK_BACKEND: ${{ inputs.backend }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     strategy:
@@ -45,16 +51,24 @@ jobs:
           ref: ${{ inputs.source_sha }}
           token: ${{ secrets.APK_SOURCE_PAT }}
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install system dependencies
         shell: pwsh
         run: |
           vcpkg install zeromq:${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}-windows
           echo "CMAKE_PREFIX_PATH=$env:VCPKG_INSTALLATION_ROOT\installed\${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}-windows" >> $env:GITHUB_ENV
 
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.40.0
+
       - name: Compile APK
         shell: cmd
         run: |
-          cargo build --release --target ${{ matrix.rust_target_prefix }}-pc-windows-msvc --features lsp -p apk
+          just release-target ${{ matrix.rust_target_prefix }}-pc-windows-msvc
 
       - name: Create archive
         shell: pwsh

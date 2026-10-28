@@ -1,0 +1,25 @@
+name: Publish tested APK
+# Compatibility entry point retained for existing reusable-workflow callers.
+# The original release.yml owns verification, platform builds and publication.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      backend:
+        required: true
+        type: string
+      release_channel:
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  publish:
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      backend: ${{ inputs.backend }}
+      release_channel: ${{ inputs.release_channel }}

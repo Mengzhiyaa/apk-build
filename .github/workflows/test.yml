@@ -1,4 +1,5 @@
-name: "Test APK"
+name: Test APK
+run-name: "Test APK | ${{ github.event.client_payload.ref || inputs.source_ref || 'main' }} | backends=${{ github.event.client_payload.backend || github.event.client_payload.features || inputs.backend || 'all' }}"
 on:
   repository_dispatch:
     types: [run-tests]
@@ -6,153 +7,134 @@ on:
     inputs:
       source_sha:
         required: true
-        description: "The commit SHA to test"
+        description: Full APK commit SHA to test
         type: string
       source_ref:
-        required: false
-        description: "The branch/ref to test"
-        default: "main"
+        description: Source branch (for reports)
+        default: main
         type: string
+      backend:
+        description: Test backends
+        type: choice
+        default: all
+        options: [all, runtime, ty, pyrefly]
+      release:
+        description: Publish after the complete test gate passes
+        type: boolean
+        default: false
+      release_backend:
+        description: Backend to release
+        type: choice
+        default: ty
+        options: [runtime, ty, pyrefly]
+      release_channel:
+        description: Release channel
+        type: choice
+        default: alpha
+        options: [alpha, beta, rc, stable]
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      source_ref:
+        type: string
+        default: main
+      backend:
+        type: string
+        default: all
+      release:
+        type: boolean
+        default: false
+      release_backend:
+        type: string
+        default: ty
+      release_channel:
+        type: string
+        default: alpha
 
-# Prevent concurrent test runs for the same SHA
+# Keep focused runs separate from all-backend runs and release requests.
 concurrency:
-  group: test-${{ github.event.client_payload.sha || inputs.source_sha }}
-  cancel-in-progress: true
+  group: test-${{ github.event.client_payload.sha || inputs.source_sha }}-${{ github.event.client_payload.backend || github.event.client_payload.features || inputs.backend || 'all' }}-${{ github.event.client_payload.release || inputs.release || github.event.action == 'run-release' }}-${{ github.event.client_payload.release_backend || inputs.release_backend || 'ty' }}-${{ github.event.client_payload.release_channel || inputs.release_channel || 'alpha' }}
+  cancel-in-progress: ${{ github.event.client_payload.release != true && inputs.release != true && github.event.action != 'run-release' }}
+
+permissions:
+  contents: write # The gated reusable release publishes artifacts and tags.
 
 jobs:
-  # Resolve inputs from either repository_dispatch or workflow_dispatch
   resolve:
-    name: Resolve Inputs
+    name: Validate test request
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       ref: ${{ steps.resolve.outputs.ref }}
-      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      backend: ${{ steps.resolve.outputs.backend }}
+      release: ${{ steps.resolve.outputs.release }}
+      release_backend: ${{ steps.resolve.outputs.release_backend }}
+      channel: ${{ steps.resolve.outputs.channel }}
+      status_context: ${{ steps.resolve.outputs.status_context }}
     steps:
-      - name: Resolve dispatch payload
+      - uses: actions/checkout@v7
+      - name: Validate dispatch contract
         id: resolve
-        run: |
-          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "sha=${{ github.event.client_payload.sha }}" >> $GITHUB_OUTPUT
-            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
-            echo "pr_number=${{ github.event.client_payload.pr_number }}" >> $GITHUB_OUTPUT
-          else
-            echo "sha=${{ inputs.source_sha }}" >> $GITHUB_OUTPUT
-            echo "ref=${{ inputs.source_ref }}" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
-          fi
-
+        env:
+          INPUTS_JSON: ${{ toJSON(inputs) }}
+        run: python .github/scripts/resolve.py
       - name: Set pending commit status
         uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ steps.resolve.outputs.sha }}
+          STATUS_CONTEXT: ${{ steps.resolve.outputs.status_context }}
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
             await github.rest.repos.createCommitStatus({
-              owner: 'Mengzhiyaa',
-              repo: 'apk',
-              sha: '${{ steps.resolve.outputs.sha }}',
-              state: 'pending',
-              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / tests',
-              description: 'Tests are running...'
+              owner: 'Mengzhiyaa', repo: 'apk', sha: process.env.SOURCE_SHA,
+              state: 'pending', context: process.env.STATUS_CONTEXT,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              description: 'Required tests are running'
             });
 
-  test_linux:
-    name: Test Linux
-    needs: [resolve]
-    uses: ./.github/workflows/test-linux.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  test_macos:
-    name: Test macOS
-    needs: [resolve]
-    uses: ./.github/workflows/test-macos.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  test_windows:
-    name: Test Windows
-    needs: [resolve]
-    uses: ./.github/workflows/test-windows.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  test_libpy:
-    name: Test libpy Multi-Python
-    needs: [resolve]
-    uses: ./.github/workflows/test-libpy.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  test_pybridge:
-    name: Test pybridge CPython ABI Matrix
-    needs: [resolve]
-    uses: ./.github/workflows/test-pybridge.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  test_debug:
-    name: Test Debugger Acceptance
-    needs: [resolve]
-    uses: ./.github/workflows/test-debug.yml
-    secrets: inherit
-    with:
-      source_sha: ${{ needs.resolve.outputs.sha }}
-
-  benchmarks:
-    name: Benchmark APK
-    needs: [resolve]
-    uses: ./.github/workflows/benchmarks.yml
+  verify:
+    name: Required APK checks | ${{ needs.resolve.outputs.backend }} backends
+    needs: resolve
+    uses: ./.github/workflows/test-suite.yml
     secrets: inherit
     with:
       source_sha: ${{ needs.resolve.outputs.sha }}
       source_ref: ${{ needs.resolve.outputs.ref }}
-      benchmark_mode: smoke
+      backend: ${{ needs.resolve.outputs.backend }}
 
-  # Report final status back to apks
   report_status:
-    name: Report Status
-    if: always()
-    needs: [resolve, test_linux, test_macos, test_windows, test_libpy, test_pybridge, test_debug, benchmarks]
+    name: Commit status | required test gate
+    if: always() && needs.resolve.result == 'success'
+    needs: [resolve, verify]
     runs-on: ubuntu-latest
     steps:
-      - name: Determine overall result
-        id: result
-        run: |
-          # libpy_windows is intentionally continue-on-error; treat any
-          # non-success state as a soft warning so the overall commit
-          # status reflects real regressions, not diagnostic noise.
-          if [ "${{ needs.test_linux.result }}" = "success" ] && \
-             [ "${{ needs.test_macos.result }}" = "success" ] && \
-             [ "${{ needs.test_windows.result }}" = "success" ] && \
-             [ "${{ needs.test_libpy.result }}" = "success" ] && \
-             [ "${{ needs.test_pybridge.result }}" = "success" ] && \
-             [ "${{ needs.test_debug.result }}" = "success" ] && \
-             [ "${{ needs.benchmarks.result }}" = "success" ]; then
-            echo "state=success" >> $GITHUB_OUTPUT
-            echo "description=All tests passed" >> $GITHUB_OUTPUT
-          else
-            echo "state=failure" >> $GITHUB_OUTPUT
-            echo "description=Failed: L=${{ needs.test_linux.result }}, M=${{ needs.test_macos.result }}, W=${{ needs.test_windows.result }}, libpy=${{ needs.test_libpy.result }}, pybridge=${{ needs.test_pybridge.result }}, debug=${{ needs.test_debug.result }}, benchmarks=${{ needs.benchmarks.result }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Report commit status to apks
-        uses: actions/github-script@v9
+      - uses: actions/github-script@v9
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+          STATUS_CONTEXT: ${{ needs.resolve.outputs.status_context }}
+          RESULT: ${{ needs.verify.result }}
         with:
           github-token: ${{ secrets.APK_SOURCE_PAT }}
           script: |
+            const passed = process.env.RESULT === 'success';
             await github.rest.repos.createCommitStatus({
-              owner: 'Mengzhiyaa',
-              repo: 'apk',
-              sha: '${{ needs.resolve.outputs.sha }}',
-              state: '${{ steps.result.outputs.state }}',
-              target_url: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-              context: 'apk-build / tests',
-              description: '${{ steps.result.outputs.description }}'
+              owner: 'Mengzhiyaa', repo: 'apk', sha: process.env.SOURCE_SHA,
+              state: passed ? 'success' : 'failure', context: process.env.STATUS_CONTEXT,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              description: passed ? 'All required tests passed' : `Required tests: ${process.env.RESULT}`
             });
+
+  release:
+    name: Release | tested source + selected backend
+    needs: [resolve, verify, report_status]
+    if: needs.resolve.outputs.release == 'true'
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      backend: ${{ needs.resolve.outputs.release_backend }}
+      release_channel: ${{ needs.resolve.outputs.channel }}
+      tests_verified: true
